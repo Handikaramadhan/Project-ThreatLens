@@ -1,0 +1,15 @@
+[Unit]
+Description=ThreatLens Podman stack
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+WorkingDirectory=/opt/threatlens
+ExecStart=/opt/threatlens/podman/threatlens-up.sh
+ExecStop=/opt/threatlens/podman/threatlens-down.sh
+TimeoutStartSec=900
+
+[Install]
+WantedBy=multi-user.target

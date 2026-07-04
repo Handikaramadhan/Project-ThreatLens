@@ -1,0 +1,117 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-threatlens}
+      POSTGRES_USER: ${POSTGRES_USER:-threatlens}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-threatlens}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./infra/postgres/init.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  api:
+    build:
+      context: ./backend
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg://threatlens:threatlens@postgres:5432/threatlens}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      API_CORS_ORIGINS: ${API_CORS_ORIGINS:-http://localhost:8080}
+      NVD_API_KEY: ${NVD_API_KEY:-}
+      URLHAUS_AUTH_KEY: ${URLHAUS_AUTH_KEY:-}
+      COLLECTOR_WINDOW_DAYS: ${COLLECTOR_WINDOW_DAYS:-2}
+      AUTH_COOKIE_NAME: ${AUTH_COOKIE_NAME:-threatlens_session}
+      AUTH_COOKIE_SECURE: ${AUTH_COOKIE_SECURE:-false}
+      AUTH_SESSION_HOURS: ${AUTH_SESSION_HOURS:-12}
+      AI_ENABLED: ${AI_ENABLED:-false}
+      AI_PROVIDER: ${AI_PROVIDER:-}
+      AI_MODEL: ${AI_MODEL:-}
+      PICOCLAW_RUNNER_URL: http://picoclaw-runner:8090
+      PICOCLAW_RUNNER_TOKEN: ${PICOCLAW_RUNNER_TOKEN:-}
+      PICOCLAW_TIMEOUT_SECONDS: ${PICOCLAW_TIMEOUT_SECONDS:-180}
+      AI_MAX_PROMPT_CHARS: ${AI_MAX_PROMPT_CHARS:-12000}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    expose:
+      - "8000"
+
+  picoclaw-runner:
+    build:
+      context: ./picoclaw-runner
+    environment:
+      PICOCLAW_RUNNER_TOKEN: ${PICOCLAW_RUNNER_TOKEN:-}
+      PICOCLAW_RUN_TIMEOUT: ${PICOCLAW_RUN_TIMEOUT:-180}
+    volumes:
+      - picoclaw-data:/data
+    expose:
+      - "8090"
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,noexec,nosuid
+    security_opt:
+      - no-new-privileges:true
+
+  worker:
+    build:
+      context: ./backend
+    command: ["celery", "-A", "worker.celery_app.celery_app", "worker", "--beat", "--loglevel=INFO"]
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg://threatlens:threatlens@postgres:5432/threatlens}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      NVD_API_KEY: ${NVD_API_KEY:-}
+      URLHAUS_AUTH_KEY: ${URLHAUS_AUTH_KEY:-}
+      COLLECTOR_WINDOW_DAYS: ${COLLECTOR_WINDOW_DAYS:-2}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  frontend-build:
+    image: node:22-alpine
+    working_dir: /app
+    volumes:
+      - ./frontend:/app
+      - frontend-dist:/app/dist
+    command: ["sh", "-c", "npm install && npm run build"]
+
+  caddy:
+    image: caddy:2-alpine
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./infra/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - frontend-dist:/srv/frontend:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on:
+      api:
+        condition: service_started
+      frontend-build:
+        condition: service_completed_successfully
+
+volumes:
+  postgres-data:
+  redis-data:
+  frontend-dist:
+  caddy-data:
+  caddy-config:
+  picoclaw-data:
