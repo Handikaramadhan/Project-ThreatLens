@@ -1,7 +1,7 @@
 # ThreatLens
 
 <p align="center">
-  <img src="frontend/public/brand/threatlens-mark.png" alt="ThreatLens" width="520">
+  <img src="frontend/public/brand/threatlens-mark.png" alt="ThreatLens" width="250">
 </p>
 
 <p align="center">
