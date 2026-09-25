@@ -37,12 +37,12 @@ export function SetupAdminPage({ onComplete }: { onComplete: () => void }) {
   return (
     <AuthLayout eyebrow="First-run setup" title="Buat admin pertama">
       <form className="auth-form" onSubmit={submit}>
-        <label>Username<input autoComplete="username" minLength={3} onChange={(event) => setUsername(event.target.value)} required value={username} /></label>
-        <label>Password<input autoComplete="new-password" minLength={PASSWORD_MIN_LENGTH} onChange={(event) => setPassword(event.target.value)} required type="password" value={password} /></label>
+        <label>Username<input autoComplete="username" minLength={3} name="username" onChange={(event) => setUsername(event.target.value)} required spellCheck={false} value={username} /></label>
+        <label>Password<input autoComplete="new-password" minLength={PASSWORD_MIN_LENGTH} name="password" onChange={(event) => setPassword(event.target.value)} required type="password" value={password} /></label>
         <PasswordStrength password={password} />
-        <label>Konfirmasi password<input autoComplete="new-password" minLength={PASSWORD_MIN_LENGTH} onChange={(event) => setConfirmPassword(event.target.value)} required type="password" value={confirmPassword} /></label>
+        <label>Konfirmasi password<input autoComplete="new-password" minLength={PASSWORD_MIN_LENGTH} name="confirm_password" onChange={(event) => setConfirmPassword(event.target.value)} required type="password" value={confirmPassword} /></label>
         {error && <div className="form-error" role="alert">{error}</div>}
-        <button disabled={busy || !analyzePassword(password).valid} type="submit"><UserPlus size={18} />{busy ? "Membuat..." : "Buat admin"}</button>
+        <button disabled={busy || !analyzePassword(password).valid} type="submit"><UserPlus size={18} />{busy ? "Membuat…" : "Buat admin"}</button>
       </form>
     </AuthLayout>
   );

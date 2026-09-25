@@ -40,27 +40,39 @@ export function AIThreatIntelView({ csrfToken }: Props) {
   const [sending, setSending] = useState(false);
   const [error, setError] = useState("");
   const messageEnd = useRef<HTMLDivElement>(null);
+  const activeIdRef = useRef<number | null>(null);
+  const messageRequestId = useRef(0);
+
+  function selectConversation(id: number | null) {
+    activeIdRef.current = id;
+    setActiveId(id);
+  }
 
   useEffect(() => {
+    let active = true;
     Promise.all([fetchAIStatus(), fetchAIConversations()])
       .then(([nextStatus, rows]) => {
+        if (!active) return;
         setStatus(nextStatus);
         setConversations(rows);
-        if (rows[0]) setActiveId(rows[0].id);
+        if (rows[0]) selectConversation(rows[0].id);
       })
-      .catch((reason) => setError(reason instanceof Error ? reason.message : "AI workspace gagal dimuat."))
-      .finally(() => setLoading(false));
+      .catch((reason) => { if (active) setError(reason instanceof Error ? reason.message : "AI workspace gagal dimuat."); })
+      .finally(() => { if (active) setLoading(false); });
+    return () => { active = false; };
   }, []);
 
   useEffect(() => {
+    const currentRequest = ++messageRequestId.current;
+    setMessages([]);
     if (activeId === null) {
-      setMessages([]);
       return;
     }
     setError("");
     fetchAIMessages(activeId)
-      .then(setMessages)
-      .catch((reason) => setError(reason instanceof Error ? reason.message : "Percakapan gagal dimuat."));
+      .then((rows) => { if (currentRequest === messageRequestId.current) setMessages(rows); })
+      .catch((reason) => { if (currentRequest === messageRequestId.current) setError(reason instanceof Error ? reason.message : "Percakapan gagal dimuat."); });
+    return () => { messageRequestId.current += 1; };
   }, [activeId]);
 
   useEffect(() => {
@@ -72,7 +84,7 @@ export function AIThreatIntelView({ csrfToken }: Props) {
     try {
       const conversation = await createAIConversation(csrfToken);
       setConversations((current) => [conversation, ...current]);
-      setActiveId(conversation.id);
+      selectConversation(conversation.id);
       setMessages([]);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "Conversation gagal dibuat.");
@@ -80,11 +92,14 @@ export function AIThreatIntelView({ csrfToken }: Props) {
   }
 
   async function removeConversation(id: number) {
+    const conversation = conversations.find((item) => item.id === id);
+    if (!window.confirm(`Hapus percakapan "${conversation?.title || "ini"}"? Tindakan ini tidak dapat dibatalkan.`)) return;
+    setError("");
     try {
       await deleteAIConversation(id, csrfToken);
       const remaining = conversations.filter((item) => item.id !== id);
       setConversations(remaining);
-      if (activeId === id) setActiveId(remaining[0]?.id ?? null);
+      if (activeIdRef.current === id) selectConversation(remaining[0]?.id ?? null);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "Conversation gagal dihapus.");
     }
@@ -97,20 +112,37 @@ export function AIThreatIntelView({ csrfToken }: Props) {
     setError("");
     setSending(true);
     setDraft("");
+    let conversationId = activeId;
     try {
-      let conversationId = activeId;
       if (conversationId === null) {
         const conversation = await createAIConversation(csrfToken);
         conversationId = conversation.id;
-        setActiveId(conversation.id);
+        selectConversation(conversation.id);
         setConversations((current) => [conversation, ...current]);
       }
+      messageRequestId.current += 1;
       const result = await sendAIMessage(conversationId, content, csrfToken);
-      setMessages((current) => [...current, result.user_message, result.assistant_message]);
-      const refreshed = await fetchAIConversations();
-      setConversations(refreshed);
+      if (activeIdRef.current === conversationId) {
+        try {
+          const rows = await fetchAIMessages(conversationId);
+          if (activeIdRef.current === conversationId) {
+            messageRequestId.current += 1;
+            setMessages(rows);
+          }
+        } catch {
+          if (activeIdRef.current === conversationId) {
+            messageRequestId.current += 1;
+            setMessages((current) => [...current, result.user_message, result.assistant_message]);
+          }
+        }
+      }
+      try {
+        setConversations(await fetchAIConversations());
+      } catch {
+        setError("Jawaban terkirim, tetapi daftar percakapan belum diperbarui.");
+      }
     } catch (reason) {
-      setDraft(content);
+      if (activeIdRef.current === conversationId) setDraft(content);
       setError(reason instanceof Error ? reason.message : "PicoClaw gagal menjawab.");
     } finally {
       setSending(false);
@@ -132,7 +164,7 @@ export function AIThreatIntelView({ csrfToken }: Props) {
         <div className="ai-conversation-list">
           {conversations.map((conversation) => (
             <div className={activeId === conversation.id ? "ai-conversation active" : "ai-conversation"} key={conversation.id}>
-              <button onClick={() => setActiveId(conversation.id)} type="button">
+              <button aria-current={activeId === conversation.id ? "true" : undefined} onClick={() => selectConversation(conversation.id)} type="button">
                 <MessageSquare size={15} />
                 <span>
                   <strong>{conversation.title}</strong>
@@ -162,7 +194,7 @@ export function AIThreatIntelView({ csrfToken }: Props) {
           <div>
             <strong>ThreatLens AI Analyst</strong>
             <span className={status?.reachable ? "ai-status ready" : "ai-status"}>
-              <i />{status?.reachable ? `${status.provider || "PicoClaw"} / ${status.model || "default model"}` : status?.message || "Checking PicoClaw"}
+              <i />{status?.reachable ? `${status.provider || "PicoClaw"} / ${status.model || "default model"}` : status?.message || "Checking PicoClaw…"}
             </span>
           </div>
         </header>
@@ -192,7 +224,7 @@ export function AIThreatIntelView({ csrfToken }: Props) {
             </article>
           ))}
           {sending && (
-            <div className="ai-thinking" role="status">
+            <div aria-live="polite" className="ai-thinking" role="status">
               <span /><span /><span />
               PicoClaw sedang menganalisis
             </div>
@@ -206,6 +238,7 @@ export function AIThreatIntelView({ csrfToken }: Props) {
             aria-label="Pertanyaan threat intelligence"
             disabled={!status?.reachable || sending}
             maxLength={8000}
+            name="threat_intel_question"
             onChange={(event) => setDraft(event.target.value)}
             onKeyDown={(event) => {
               if (event.key === "Enter" && !event.shiftKey) {
@@ -213,7 +246,7 @@ export function AIThreatIntelView({ csrfToken }: Props) {
                 event.currentTarget.form?.requestSubmit();
               }
             }}
-            placeholder={status?.reachable ? "Tulis pertanyaan atau CVE yang ingin diinvestigasi..." : "PicoClaw belum dikonfigurasi"}
+            placeholder={status?.reachable ? "Tulis pertanyaan atau CVE yang ingin diinvestigasi…" : "PicoClaw belum dikonfigurasi"}
             rows={3}
             value={draft}
           />

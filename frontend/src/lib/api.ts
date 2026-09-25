@@ -58,6 +58,27 @@ export type CVETrendPoint = {
   unknown: number;
 };
 
+export type SourceStatusItem = {
+  id: string;
+  name: string;
+  category: string;
+  status: "ok" | "fallback" | "skipped" | "error" | "unknown" | string;
+  count: number | null;
+  message: string;
+  consecutive_failures: number;
+  last_success_at: string | null;
+  last_seen_at: string | null;
+};
+
+export type CollectionSummary = {
+  status: string;
+  started_at: string | null;
+  finished_at: string | null;
+  duration_seconds: number | null;
+  degraded_sources: number;
+  sources: SourceStatusItem[];
+};
+
 export type DashboardPayload = {
   metrics: Metric[];
   cves: CVEItem[];
@@ -69,79 +90,26 @@ export type DashboardPayload = {
   severity_distribution: DistributionPoint[];
   ioc_distribution: DistributionPoint[];
   asset_risk_distribution: DistributionPoint[];
+  collection: CollectionSummary | null;
 };
 
-export const fallbackDashboard: DashboardPayload = {
+export const emptyDashboard: DashboardPayload = {
   metrics: [
-    { label: "Critical CVE (7 hari)", value: 12, delta: "published in the last 7 days", tone: "danger" },
-    { label: "Known exploited", value: 4, delta: "tracked in the CISA KEV catalog", tone: "warning" },
-    { label: "New indicators", value: 238, delta: "observed in the last 7 days", tone: "success" },
-    { label: "High-risk assets", value: 3, delta: "requires exposure review", tone: "info" }
+    { label: "Critical CVE (7 hari)", value: 0, delta: "data belum tersedia", tone: "danger" },
+    { label: "Known exploited", value: 0, delta: "data belum tersedia", tone: "warning" },
+    { label: "New indicators", value: 0, delta: "data belum tersedia", tone: "success" },
+    { label: "High-risk assets", value: 0, delta: "data belum tersedia", tone: "info" }
   ],
-  cves: [
-    { cve_id: "CVE-2026-5281", severity: "Critical", vendor: "Google", product: "Chrome", published_at: "2026-05-21T00:00:00Z", kev: true },
-    { cve_id: "CVE-2026-42897", severity: "High", vendor: "Microsoft", product: "Windows", published_at: "2026-05-20T00:00:00Z", kev: true },
-    { cve_id: "CVE-2026-3910", severity: "High", vendor: "Fortinet", product: "FortiOS", published_at: "2026-05-19T00:00:00Z", kev: true },
-    { cve_id: "CVE-2026-1234", severity: "Medium", vendor: "Cisco", product: "IOS XE", published_at: "2026-05-18T00:00:00Z", kev: false }
-  ],
-  iocs: [
-    { indicator: "185.197.xx.23", type: "ip", severity: "High", source: "AbuseIPDB" },
-    { indicator: "176.65.xx.11", type: "ip", severity: "High", source: "OTX" },
-    { indicator: "45.77.xx.54", type: "ip", severity: "Medium", source: "AbuseIPDB" },
-    { indicator: "103.224.xx.10", type: "domain", severity: "Medium", source: "OTX" },
-    { indicator: "192.99.xx.12", type: "hash", severity: "Low", source: "MalwareBazaar" }
-  ],
-  news: [
-    { title: "New Chrome zero-day CVE-2026-5281", source: "THN", published_at: "2026-06-26T08:00:00Z", url: "#fallback-chrome", summary: "Chrome vulnerability observed in active exploitation." },
-    { title: "LockBit 3.0 targeting ESXi", source: "BleepingComputer", published_at: "2026-06-25T18:00:00Z", url: "#fallback-lockbit", summary: "Ransomware activity targeting virtualization infrastructure." },
-    { title: "Microsoft Patch Tuesday roundup", source: "Microsoft", published_at: "2026-06-25T09:00:00Z", url: "#fallback-patch", summary: "Security updates and vulnerability remediation guidance." }
-  ],
-  techniques: [
-    { technique_id: "T1059", name: "Command and Scripting", tactic: "Execution", count: 45 },
-    { technique_id: "T1566", name: "Phishing", tactic: "Initial Access", count: 32 },
-    { technique_id: "T1078", name: "Valid Accounts", tactic: "Defense Evasion", count: 28 },
-    { technique_id: "T1105", name: "Ingress Tool Transfer", tactic: "Command and Control", count: 18 }
-  ],
-  exposures: [
-    { asset: "FortiGate-01", asset_type: "Firewall", os_version: "7.2.5", matching_cve: 3, risk: "High" },
-    { asset: "Win-Server-01", asset_type: "Server", os_version: "2022", matching_cve: 5, risk: "High" },
-    { asset: "ESXi-Host-01", asset_type: "Hypervisor", os_version: "7.0U3", matching_cve: 2, risk: "Medium" },
-    { asset: "Exchange-01", asset_type: "Mail Server", os_version: "2019", matching_cve: 4, risk: "High" }
-  ],
-  cve_trend: [
-    { date: "2026-06-17", critical: 1, high: 3, medium: 5, low: 2, unknown: 0 },
-    { date: "2026-06-18", critical: 0, high: 4, medium: 7, low: 1, unknown: 0 },
-    { date: "2026-06-19", critical: 2, high: 6, medium: 8, low: 3, unknown: 1 },
-    { date: "2026-06-20", critical: 1, high: 2, medium: 4, low: 2, unknown: 0 },
-    { date: "2026-06-21", critical: 3, high: 5, medium: 9, low: 2, unknown: 0 },
-    { date: "2026-06-22", critical: 0, high: 3, medium: 6, low: 4, unknown: 1 },
-    { date: "2026-06-23", critical: 2, high: 7, medium: 8, low: 2, unknown: 0 },
-    { date: "2026-06-24", critical: 1, high: 4, medium: 7, low: 3, unknown: 0 },
-    { date: "2026-06-25", critical: 4, high: 8, medium: 12, low: 5, unknown: 1 },
-    { date: "2026-06-26", critical: 3, high: 6, medium: 9, low: 2, unknown: 0 },
-    { date: "2026-06-27", critical: 1, high: 5, medium: 8, low: 4, unknown: 0 },
-    { date: "2026-06-28", critical: 2, high: 4, medium: 6, low: 2, unknown: 1 },
-    { date: "2026-06-29", critical: 1, high: 7, medium: 10, low: 3, unknown: 0 },
-    { date: "2026-06-30", critical: 3, high: 9, medium: 11, low: 4, unknown: 0 }
-  ],
-  severity_distribution: [
-    { label: "Critical", value: 54 },
-    { label: "High", value: 312 },
-    { label: "Medium", value: 690 },
-    { label: "Low", value: 188 },
-    { label: "Unknown", value: 21 }
-  ],
-  ioc_distribution: [
-    { label: "IP", value: 142 },
-    { label: "DOMAIN", value: 88 },
-    { label: "URL", value: 61 },
-    { label: "HASH", value: 109 }
-  ],
-  asset_risk_distribution: [
-    { label: "High", value: 3 },
-    { label: "Medium", value: 1 },
-    { label: "Low", value: 0 }
-  ]
+  cves: [],
+  iocs: [],
+  news: [],
+  techniques: [],
+  exposures: [],
+  cve_trend: [],
+  severity_distribution: [],
+  ioc_distribution: [],
+  asset_risk_distribution: [],
+  collection: null
 };
 
 export async function fetchDashboard(): Promise<DashboardPayload> {

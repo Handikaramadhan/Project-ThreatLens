@@ -28,15 +28,17 @@ integration are functional.
 
 Current boundaries:
 
-- The alert page stores no delivery workflow yet; Telegram, Discord, and email
-  delivery are planned but not implemented.
-- Asset exposure is based on stored mappings. ThreatLens does not actively scan
-  hosts or prove that a vulnerable component is installed.
-- A completely empty database receives starter dashboard records on first
-  startup. Run a live collection and review the sample asset inventory before
-  using the instance for operational decisions.
-- Database tables are created by SQLAlchemy at startup. A versioned migration
-  workflow has not been added yet.
+- Per-user alert delivery supports Telegram and Discord. Telegram bot tokens
+  and Discord webhooks are stored per user from the UI.
+- Asset exposure is inferred from asset metadata matched against CVE/NVD
+  affected products. ThreatLens does not actively scan hosts or prove that a
+  vulnerable component is installed.
+- Production starts with an empty intelligence database. Optional demo records
+  are available only when `SEED_DEMO_DATA=true`; never enable them on an
+  operational instance.
+- Database schema is managed by Alembic migrations at startup. Existing
+  pre-migration databases are stamped only when the full current schema is
+  already present.
 
 ## Features
 
@@ -49,7 +51,9 @@ Current boundaries:
 - Filtered IOC export to formatted Excel workbooks
 - Threat news with an in-app article overview and original source link
 - Asset inventory CRUD for both admin and standard users
-- Asset exposure summaries against known CVEs
+- Conservative asset exposure matching against known CVEs
+- Per-user Telegram/Discord alerts for news, CVEs, affected assets, and source
+  health failures
 - First-run administrator bootstrap and `admin`/`user` roles
 - Admin user creation and protected account deletion
 - Secure cookies, CSRF protection, Argon2 hashes, and login rate limiting
@@ -76,7 +80,8 @@ flowchart LR
 | Caddy | `caddy:2-alpine` | Host port `8080` | Static frontend and `/api/*` reverse proxy |
 | Frontend | React + Vite | Served by Caddy | Analyst and administration interface |
 | API | FastAPI + Uvicorn | Internal `8000` | Authentication, data access, exports, enrichment |
-| Worker | Celery + Beat | Internal only | Hourly intelligence collection |
+| Worker | Celery worker | Internal only | Intelligence collection tasks |
+| Beat | Celery Beat | Internal only | Hourly collection scheduling |
 | PostgreSQL | PostgreSQL 16 | Internal `5432` | Application and intelligence data |
 | Redis | Redis 7 | Internal `6379` | Celery broker and result backend |
 | PicoClaw runner | PicoClaw sidecar | Internal `8090` | Optional isolated AI execution |
@@ -96,6 +101,10 @@ flowchart LR
 | [PhishDestroy](https://api.destroy.tools/v1/feed/primary_active) | Phishing domains | None |
 | [The Hacker News](https://thehackernews.com/) | Threat news RSS | None |
 | [BleepingComputer](https://www.bleepingcomputer.com/) | Threat news RSS | None |
+| [SecurityWeek](https://www.securityweek.com/) | Enterprise security news RSS | None |
+| [Krebs on Security](https://krebsonsecurity.com/) | Cybercrime investigation RSS | None |
+| [SANS Internet Storm Center](https://isc.sans.edu/) | Technical threat diary RSS | None |
+| [Google Security Blog](https://security.googleblog.com/) | Security research RSS | None |
 
 External feeds can be temporarily unavailable or rate limited. A collection run
 is recorded as `partial` when one source fails while the other sources continue
@@ -113,6 +122,8 @@ to update.
 - Login is limited to five failures per client within five minutes.
 - Standard users can investigate intelligence and manage assets.
 - Only admins can manage users and trigger a collection run.
+- API documentation (`/api/docs`) and the OpenAPI schema
+  (`/api/openapi.json`) require an authenticated admin session.
 - An admin cannot delete their own account or the final remaining admin.
 - PicoClaw has no host port, uses a read-only container filesystem, and runs
   with `no-new-privileges`.
@@ -211,6 +222,11 @@ disabled after the first account is created.
 | `NVD_API_KEY` | empty | Optional NVD API key for higher rate limits |
 | `URLHAUS_AUTH_KEY` | empty | Enables authenticated URLhaus collection |
 | `COLLECTOR_WINDOW_DAYS` | `2` | Recent NVD window, capped at 120 days |
+| `NEWS_RETENTION_DAYS` | `180` | Delete threat news older than this after collection; `0` disables |
+| `IOC_RETENTION_DAYS` | `180` | Delete IOCs not seen for this many days after collection; `0` disables |
+| `COLLECTION_RUN_RETENTION_DAYS` | `30` | Delete old collection run records after collection; `0` disables |
+| `COLLECTION_RUN_MIN_KEEP` | `10` | Always keep at least this many newest collection runs |
+| `SEED_DEMO_DATA` | `false` | Development-only demo dataset |
 | `AUTH_COOKIE_NAME` | `threatlens_session` | Session cookie name |
 | `AUTH_COOKIE_SECURE` | `false` | Restrict session cookies to HTTPS |
 | `AUTH_SESSION_HOURS` | `12` | Session lifetime |
@@ -282,6 +298,7 @@ sudo podman ps
 sudo journalctl -u threatlens.service -n 200 --no-pager
 sudo podman logs --tail 200 threatlens-api
 sudo podman logs --tail 200 threatlens-worker
+sudo podman logs --tail 200 threatlens-beat
 sudo podman logs --tail 200 threatlens-caddy
 ```
 
@@ -304,6 +321,24 @@ Restarting rebuilds the API, PicoClaw runner, and frontend before recreating
 the containers. PostgreSQL, Redis, Caddy, and PicoClaw data remain in named
 Podman volumes.
 
+### Database Migrations
+
+The API runs `alembic upgrade head` on startup. For a database created before
+Alembic was added, startup stamps the existing schema as the initial revision
+only if all expected application tables are present.
+
+Check the current revision:
+
+```bash
+sudo podman exec threatlens-api alembic current
+```
+
+Run migrations manually if needed:
+
+```bash
+sudo podman exec threatlens-api alembic upgrade head
+```
+
 ### Run Maintenance Jobs
 
 The full collector can be queued by an authenticated admin. Focused maintenance
@@ -315,6 +350,12 @@ sudo podman exec threatlens-api python -m app.scripts.backfill_products
 ```
 
 Celery Beat schedules the full intelligence collection every hour.
+After each collection, ThreatLens prunes expired news, stale IOCs, and old
+collection run records according to the retention settings. Pruning counts are
+stored in the latest collection run details.
+Asset exposure matching is also recalculated after collection and whenever an
+asset is created or updated. Users can manually recalculate exposure from the
+Assets page.
 
 ### Health Check
 
@@ -325,7 +366,7 @@ curl http://127.0.0.1:8080/api/health
 Expected response:
 
 ```json
-{"status":"ok","service":"threatlens-api"}
+{"status":"ok","service":"threatlens-api","checks":{"database":"ok","redis":"ok"}}
 ```
 
 Protected endpoints correctly return `401 Unauthorized` without a valid
@@ -350,11 +391,11 @@ Restoring replaces application data. Stop application access and use a verified
 backup:
 
 ```bash
-sudo podman stop threatlens-api threatlens-worker
+sudo podman stop threatlens-api threatlens-worker threatlens-beat
 sudo podman exec -i threatlens-postgres \
   pg_restore -U threatlens -d threatlens --clean --if-exists \
   < threatlens-backup.dump
-sudo podman start threatlens-api threatlens-worker
+sudo podman start threatlens-api threatlens-worker threatlens-beat
 ```
 
 Test the restore process outside production before relying on it.
@@ -371,7 +412,7 @@ docker compose up --build
 
 - Application: `http://localhost:8080`
 - API health: `http://localhost:8080/api/health`
-- OpenAPI documentation: `http://localhost:8080/api/docs`
+- OpenAPI documentation: `http://localhost:8080/api/docs` after admin login
 
 Stop the local stack with:
 
@@ -381,22 +422,35 @@ docker compose down
 
 ## Testing
 
-Run backend tests in the same container environment used by production:
+Run backend tests locally with the project virtual environment:
 
 ```bash
-podman build -t threatlens-api:test backend
-podman run --rm threatlens-api:test \
-  python -m unittest discover -s tests -v
+python -m venv .venv
+.venv/bin/python -m pip install -r backend/requirements.txt
+PYTHONPATH=backend .venv/bin/python -m unittest discover -s backend/tests -v
 ```
 
-Build the frontend:
+Run backend tests and the frontend build in the same container environment used
+by production:
 
 ```bash
-podman run --rm \
-  -v "$PWD/frontend:/app:Z" \
-  -w /app \
-  docker.io/library/node:22-alpine \
-  sh -lc "npm install && npm run build"
+sh scripts/test-container.sh
+```
+
+Run dependency and filesystem security checks when `pip-audit`, `npm`, or
+`trivy` are installed:
+
+```bash
+sh scripts/security-scan.sh
+```
+
+Backups support optional GPG encryption and rsync offsite copy without changing
+the default local backup behavior:
+
+```bash
+BACKUP_ENCRYPTION_PASSPHRASE_FILE=/root/threatlens-backup.pass \
+BACKUP_OFFSITE_RSYNC_TARGET=backup-host:/srv/threatlens \
+sh podman/threatlens-backup.sh
 ```
 
 ## Project Structure

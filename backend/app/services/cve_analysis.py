@@ -1,7 +1,7 @@
 import re
 from dataclasses import dataclass
 
-from app.schemas.cves import CVSSMetrics, MitreTechniqueMapping, RootCauseAnalysis
+from app.schemas.cves import CVSSMetrics, ExploitabilityAnalysis, MitreTechniqueMapping, RootCauseAnalysis
 
 
 @dataclass(frozen=True)
@@ -238,3 +238,93 @@ def build_mitre_mapping(
             "Low",
         )
     return mappings[:4]
+
+
+def build_exploitability_analysis(
+    *,
+    description: str,
+    weaknesses: list[str],
+    cvss: CVSSMetrics | None,
+    known_exploited: bool,
+    has_public_references: bool,
+    related_news_count: int,
+) -> ExploitabilityAnalysis:
+    ids, weakness_basis = _weakness_ids(weaknesses, description)
+    lowered = description.lower()
+    prerequisites: list[str] = []
+    path: list[str] = []
+    signals: list[str] = []
+    notes: list[str] = []
+    basis: list[str] = []
+    score = 0
+
+    if known_exploited:
+        score += 4
+        signals.append("CISA KEV atau NVD menandai eksploitasi aktif.")
+        basis.append("Known exploited flag")
+    if cvss:
+        if cvss.attack_vector.lower() == "network":
+            score += 2
+            prerequisites.append("Target service reachable over network.")
+            path.append("Attacker reaches the vulnerable network-exposed component.")
+        if cvss.attack_complexity.lower() == "low":
+            score += 1
+            prerequisites.append("No unusual race/timing/environment condition required.")
+        if cvss.privileges_required.lower() in {"none", "no privileges required"}:
+            score += 1
+            prerequisites.append("Authentication may not be required.")
+        if cvss.user_interaction.lower() not in {"none", "", "unknown"}:
+            prerequisites.append("A user interaction step may be required.")
+            path.append("Attacker delivers malicious content or link to a user.")
+        if cvss.exploitability_score is not None and cvss.exploitability_score >= 3:
+            score += 1
+            signals.append(f"CVSS exploitability score is {cvss.exploitability_score}.")
+        basis.append("CVSS vector")
+
+    if any(item in ids for item in ("CWE-78", "CWE-89", "CWE-502", "CWE-787", "CWE-416", "CWE-434", "CWE-918")):
+        score += 1
+        signals.append(f"High-abuse weakness class: {', '.join(ids)}.")
+        basis.append(weakness_basis)
+    if has_public_references:
+        score += 1
+        signals.append("Public advisory/reference material is available.")
+        basis.append("Reference tags")
+    if related_news_count:
+        score += 1
+        signals.append(f"{related_news_count} related intelligence item(s) mention this CVE.")
+        basis.append("Threat news correlation")
+    if any(term in lowered for term in ("remote code execution", "rce", "command execution", "authentication bypass")):
+        score += 1
+        path.append("Exploit impact may directly reach code execution or protected-function bypass.")
+
+    if not path:
+        path.append("Exploit path is not public enough to describe beyond the CVSS conditions.")
+    if any(item in ids for item in ("CWE-78", "CWE-89", "CWE-502")):
+        notes.append("Prioritize logs around input-bearing endpoints and abnormal process/database activity.")
+    if cvss and cvss.attack_vector.lower() == "network":
+        notes.append("Check internet-exposed assets and edge controls before internal-only systems.")
+    if known_exploited:
+        notes.append("Treat matching assets as urgent until patched, isolated, or explicitly accepted.")
+    if not notes:
+        notes.append("Use vendor advisory and CVSS conditions to define detection scope.")
+
+    if score >= 7:
+        likelihood, confidence = "Very high", "High"
+    elif score >= 5:
+        likelihood, confidence = "High", "Medium"
+    elif score >= 3:
+        likelihood, confidence = "Medium", "Medium"
+    elif score >= 1:
+        likelihood, confidence = "Low", "Low"
+    else:
+        likelihood, confidence = "Unknown", "Low"
+
+    return ExploitabilityAnalysis(
+        likelihood=likelihood,
+        confidence=confidence,
+        prerequisites=prerequisites or ["Prerequisites are not disclosed by public sources."],
+        likely_attack_path=path,
+        exploitation_signals=signals or ["No public exploitation signal is cached yet."],
+        defensive_notes=notes,
+        basis=sorted(set(basis)) or ["Local cache"],
+    )

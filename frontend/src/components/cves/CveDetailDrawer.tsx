@@ -14,13 +14,15 @@ import {
   Sparkles,
   X,
 } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   fetchCVEAIEnrichment,
   generateCVEAIEnrichment,
   type CVEAIEnrichment,
 } from "../../lib/ai";
 import type { CVEDetail } from "../../lib/cves";
+import { formatApiDate } from "../../lib/datetime";
+import { useDialogFocus } from "../../hooks/useDialogFocus";
 import { severityClass } from "../ui/CveTable";
 
 type Props = {
@@ -48,6 +50,8 @@ export function CveDetailDrawer({ cveId, csrfToken, detail, error, loading, onCl
   const [aiEnrichment, setAIEnrichment] = useState<CVEAIEnrichment | null>(null);
   const [aiLoading, setAILoading] = useState(false);
   const [aiError, setAIError] = useState("");
+  const dialogRef = useRef<HTMLElement>(null);
+  useDialogFocus(dialogRef, { onClose });
 
   useEffect(() => {
     function closeOnEscape(event: KeyboardEvent) {
@@ -107,6 +111,7 @@ export function CveDetailDrawer({ cveId, csrfToken, detail, error, loading, onCl
         aria-modal="true"
         className="cve-detail-drawer"
         onMouseDown={(event) => event.stopPropagation()}
+        ref={dialogRef}
         role="dialog"
       >
         <header className="cve-detail-header">
@@ -130,7 +135,7 @@ export function CveDetailDrawer({ cveId, csrfToken, detail, error, loading, onCl
         {loading && (
           <div aria-live="polite" className="cve-detail-state loading" role="status">
             <LoaderCircle aria-hidden="true" className="loading-spinner" size={32} />
-            <span>Mengambil detail dari cache/NVD...</span>
+            <span>Mengambil detail dari cache/NVD…</span>
           </div>
         )}
         {error && <div className="cve-detail-state error"><AlertTriangle size={20} />{error}</div>}
@@ -154,7 +159,7 @@ export function CveDetailDrawer({ cveId, csrfToken, detail, error, loading, onCl
               </div>
               <p className="cve-description">{detail.description}</p>
               <div className="cve-meta">
-                <span>Published <strong>{new Date(detail.published_at).toLocaleDateString("id-ID")}</strong></span>
+                <span>Published <strong>{formatApiDate(detail.published_at)}</strong></span>
                 <span>Source <strong>{detail.detail_source}</strong></span>
                 <span>Weakness <strong>{detail.weaknesses.join(", ") || "Not available"}</strong></span>
               </div>
@@ -206,16 +211,16 @@ export function CveDetailDrawer({ cveId, csrfToken, detail, error, loading, onCl
             <section className="cve-detail-section ai-enrichment-section">
               <div className="ai-enrichment-heading">
                 <div className="section-heading"><Sparkles size={18} /><h3>AI Investigation</h3></div>
-                <button disabled={aiLoading} onClick={() => void runAIInvestigation()} type="button">
+                <button className={aiEnrichment ? "refresh-button" : undefined} disabled={aiLoading} onClick={() => void runAIInvestigation()} type="button">
                   {aiLoading ? <LoaderCircle className="loading-spinner" size={16} /> : aiEnrichment ? <RefreshCw size={16} /> : <Sparkles size={16} />}
-                  {aiLoading ? "Analyzing" : aiEnrichment ? "Refresh analysis" : "Run analysis"}
+                  {aiLoading ? "Menganalisis…" : aiEnrichment ? "Muat ulang analisis" : "Jalankan analisis"}
                 </button>
               </div>
               {aiError && <div className="ai-inline-error"><AlertTriangle size={15} />{aiError}</div>}
               {aiLoading && !aiEnrichment && (
                 <div className="ai-investigation-loading" role="status">
                   <LoaderCircle className="loading-spinner" size={24} />
-                  <span>PicoClaw sedang mengkorelasikan evidence...</span>
+                  <span>PicoClaw sedang mengkorelasikan evidence…</span>
                 </div>
               )}
               {aiEnrichment ? (
@@ -297,6 +302,25 @@ export function CveDetailDrawer({ cveId, csrfToken, detail, error, loading, onCl
                 <div><dt>Ransomware use</dt><dd>{detail.exploit_status.ransomware_use}</dd></div>
                 <div><dt>Action due</dt><dd>{detail.exploit_status.action_due || "-"}</dd></div>
               </dl>
+              <div className="exploitability-analysis">
+                <div>
+                  <span>Likelihood</span>
+                  <strong>{detail.exploitability_analysis.likelihood}</strong>
+                  <small>{detail.exploitability_analysis.confidence} confidence</small>
+                </div>
+                <div>
+                  <span>Prerequisites</span>
+                  <ul>{detail.exploitability_analysis.prerequisites.map((item) => <li key={item}>{item}</li>)}</ul>
+                </div>
+                <div>
+                  <span>Likely attack path</span>
+                  <ul>{detail.exploitability_analysis.likely_attack_path.map((item) => <li key={item}>{item}</li>)}</ul>
+                </div>
+                <div>
+                  <span>Defensive notes</span>
+                  <ul>{detail.exploitability_analysis.defensive_notes.map((item) => <li key={item}>{item}</li>)}</ul>
+                </div>
+              </div>
             </section>
 
             <section className="cve-detail-section">

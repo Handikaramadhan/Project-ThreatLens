@@ -3,6 +3,7 @@ from io import BytesIO
 
 import xlsxwriter
 
+from app.core.time import utc_now
 from app.models.entities import IOC
 
 SEVERITY_COLORS = {
@@ -62,7 +63,7 @@ def build_ioc_workbook(items: list[IOC], selected_type: str) -> bytes:
     summary.set_row(0, 34)
     summary.merge_range("A1:E1", "ThreatLens Indicator Intelligence", title)
     summary.write("A3", "Generated", label)
-    summary.write_datetime("B3", datetime.utcnow(), date_format)
+    summary.write_datetime("B3", utc_now(), date_format)
     summary.write("A4", "Filter", label)
     summary.write_string("B4", selected_type.upper(), value)
     summary.write("A5", "Total indicators", label)

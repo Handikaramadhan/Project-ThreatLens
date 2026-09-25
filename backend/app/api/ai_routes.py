@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.core.database import get_db
+from app.core.time import utc_now
 from app.models.entities import (
     AIConversation,
     AIMessage,
@@ -164,7 +165,7 @@ def send_message(
     db.add(user_message)
     if conversation.title == "New investigation":
         conversation.title = content[:80]
-    conversation.updated_at = datetime.utcnow()
+    conversation.updated_at = utc_now()
     db.commit()
     db.refresh(user_message)
     try:
@@ -181,7 +182,7 @@ def send_message(
         content=answer,
     )
     db.add(assistant_message)
-    conversation.updated_at = datetime.utcnow()
+    conversation.updated_at = utc_now()
     db.commit()
     db.refresh(assistant_message)
     return AIChatResponse(
@@ -244,7 +245,7 @@ def generate_cve_ai_enrichment(
     row.model = settings.ai_model
     row.confidence = float(payload["product_inference"]["confidence"])
     row.generated_by = context.user.id
-    row.generated_at = datetime.utcnow()
+    row.generated_at = utc_now()
     db.commit()
     db.refresh(row)
     return _enrichment_out(row)

@@ -9,5 +9,9 @@ celery_app.conf.beat_schedule = {
     "collect-threat-intel-every-hour": {
         "task": "worker.tasks.collect_threat_intel",
         "schedule": 3600.0,
-    }
+    },
+    "retry-pending-alerts-every-five-minutes": {
+        "task": "worker.tasks.retry_pending_alerts",
+        "schedule": 300.0,
+    },
 }

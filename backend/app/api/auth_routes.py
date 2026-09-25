@@ -9,8 +9,9 @@ from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.core.database import get_db
+from app.core.time import utc_now
 from app.models.entities import AuthSession, User
-from app.schemas.auth import AuthResponse, AuthStatus, CreateUserRequest, Credentials, LoginRequest, UserOut
+from app.schemas.auth import AuthResponse, AuthStatus, CreateUserRequest, Credentials, LoginRequest, SessionOut, UserOut
 from app.services.auth import (
     AuthContext,
     create_session,
@@ -21,6 +22,7 @@ from app.services.auth import (
     require_csrf,
     verify_password,
 )
+from app.services.audit import audit_log
 
 router = APIRouter()
 _attempts: dict[str, list[datetime]] = defaultdict(list)
@@ -34,7 +36,7 @@ def _client_key(request: Request) -> str:
 
 
 def _check_rate_limit(key: str) -> None:
-    cutoff = datetime.utcnow() - timedelta(minutes=5)
+    cutoff = utc_now() - timedelta(minutes=5)
     with _attempt_lock:
         _attempts[key] = [attempt for attempt in _attempts[key] if attempt > cutoff]
         if len(_attempts[key]) >= 5:
@@ -43,7 +45,7 @@ def _check_rate_limit(key: str) -> None:
 
 def _record_failure(key: str) -> None:
     with _attempt_lock:
-        _attempts[key].append(datetime.utcnow())
+        _attempts[key].append(utc_now())
 
 
 def _clear_failures(key: str) -> None:
@@ -107,14 +109,36 @@ def login(payload: LoginRequest, request: Request, response: Response, db: Sessi
     )
     if user is None or not valid or not user.active:
         _record_failure(key)
+        audit_log(
+            db,
+            action="auth.login",
+            actor=user,
+            request=request,
+            target_type="user",
+            target_id=username,
+            status="failed",
+            details={"username": username},
+            commit=True,
+        )
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid username or password")
 
     if updated_hash:
         user.password_hash = updated_hash
         db.commit()
-    session, raw_token = create_session(db, user)
+    session, raw_token = create_session(db, user, request)
     _clear_failures(key)
     _set_session_cookie(response, raw_token)
+    audit_log(
+        db,
+        action="auth.login",
+        actor=user,
+        request=request,
+        target_type="user",
+        target_id=str(user.id),
+        status="success",
+        details={"username": user.username},
+        commit=True,
+    )
     return AuthResponse(user=UserOut.model_validate(user), csrf_token=session.csrf_token)
 
 
@@ -144,9 +168,61 @@ def list_users(
     return list(db.scalars(select(User).order_by(User.created_at)).all())
 
 
+@router.get("/admin/sessions", response_model=list[SessionOut])
+def list_sessions(
+    db: Session = Depends(get_db),
+    context: AuthContext = Depends(require_admin),
+) -> list[SessionOut]:
+    rows = db.execute(
+        select(AuthSession, User.username)
+        .join(User, User.id == AuthSession.user_id)
+        .order_by(AuthSession.last_seen_at.desc())
+    ).all()
+    return [
+        SessionOut(
+            id=session.id,
+            user_id=session.user_id,
+            username=username,
+            current=session.id == context.session.id,
+            ip_address=session.ip_address,
+            user_agent=session.user_agent,
+            created_at=session.created_at,
+            last_seen_at=session.last_seen_at,
+            expires_at=session.expires_at,
+        )
+        for session, username in rows
+    ]
+
+
+@router.delete("/admin/sessions/{session_id}", status_code=204)
+def revoke_session(
+    session_id: int,
+    request: Request,
+    db: Session = Depends(get_db),
+    context: AuthContext = Depends(require_admin_csrf),
+) -> None:
+    session = db.get(AuthSession, session_id)
+    if session is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Session not found")
+    if session.id == context.session.id:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="You cannot revoke your current session")
+    audit_log(
+        db,
+        action="admin.session.revoke",
+        actor=context.user,
+        request=request,
+        target_type="auth_session",
+        target_id=str(session.id),
+        details={"user_id": session.user_id, "ip_address": session.ip_address},
+    )
+    db.delete(session)
+    db.commit()
+
+
 @router.post("/admin/users", response_model=UserOut, status_code=201)
 def create_user(
     payload: CreateUserRequest,
+    request: Request,
     db: Session = Depends(get_db),
     context: AuthContext = Depends(require_admin_csrf),
 ) -> User:
@@ -163,12 +239,23 @@ def create_user(
         db.rollback()
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Username already exists") from None
     db.refresh(user)
+    audit_log(
+        db,
+        action="admin.user.create",
+        actor=context.user,
+        request=request,
+        target_type="user",
+        target_id=str(user.id),
+        details={"username": user.username, "role": user.role},
+        commit=True,
+    )
     return user
 
 
 @router.delete("/admin/users/{user_id}", status_code=204)
 def delete_user(
     user_id: int,
+    request: Request,
     db: Session = Depends(get_db),
     context: AuthContext = Depends(require_admin_csrf),
 ) -> None:
@@ -179,5 +266,14 @@ def delete_user(
 
     db.execute(update(User).where(User.created_by == target.id).values(created_by=None))
     db.execute(delete(AuthSession).where(AuthSession.user_id == target.id))
+    audit_log(
+        db,
+        action="admin.user.delete",
+        actor=context.user,
+        request=request,
+        target_type="user",
+        target_id=str(target.id),
+        details={"username": target.username, "role": target.role},
+    )
     db.delete(target)
     db.commit()

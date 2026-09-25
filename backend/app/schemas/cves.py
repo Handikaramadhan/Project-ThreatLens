@@ -90,6 +90,16 @@ class MitreTechniqueMapping(BaseModel):
     url: str
 
 
+class ExploitabilityAnalysis(BaseModel):
+    likelihood: str = "Unknown"
+    confidence: str = "Low"
+    prerequisites: list[str] = Field(default_factory=list)
+    likely_attack_path: list[str] = Field(default_factory=list)
+    exploitation_signals: list[str] = Field(default_factory=list)
+    defensive_notes: list[str] = Field(default_factory=list)
+    basis: list[str] = Field(default_factory=list)
+
+
 class CVEListItem(BaseModel):
     cve_id: str
     severity: str
@@ -133,3 +143,4 @@ class CVEDetailOut(BaseModel):
     fetched_at: datetime | None
     root_cause: RootCauseAnalysis = Field(default_factory=RootCauseAnalysis)
     mitre_techniques: list[MitreTechniqueMapping] = Field(default_factory=list)
+    exploitability_analysis: ExploitabilityAnalysis = Field(default_factory=ExploitabilityAnalysis)

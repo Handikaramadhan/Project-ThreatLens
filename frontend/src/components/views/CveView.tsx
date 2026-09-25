@@ -6,7 +6,13 @@ import { CveDetailDrawer } from "../cves/CveDetailDrawer";
 import { CveTable } from "../ui/CveTable";
 import { Panel } from "../ui/Panel";
 
-const PAGE_LIMIT = 500;
+const PAGE_LIMIT = 50;
+
+function selectedCveFromHash(): string | null {
+  const [, queryString = ""] = window.location.hash.split("?");
+  const selected = new URLSearchParams(queryString).get("selected")?.trim();
+  return selected || null;
+}
 
 export function CveView({ cves: initialCves, csrfToken }: { cves: CVEItem[]; csrfToken: string }) {
   const [query, setQuery] = useState("");
@@ -18,7 +24,7 @@ export function CveView({ cves: initialCves, csrfToken }: { cves: CVEItem[]; csr
   const [pages, setPages] = useState(1);
   const [listLoading, setListLoading] = useState(true);
   const [listError, setListError] = useState("");
-  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [selectedId, setSelectedId] = useState<string | null>(() => selectedCveFromHash());
   const [detail, setDetail] = useState<CVEDetail | null>(null);
   const [detailError, setDetailError] = useState("");
   const [detailLoading, setDetailLoading] = useState(false);
@@ -55,6 +61,14 @@ export function CveView({ cves: initialCves, csrfToken }: { cves: CVEItem[]; csr
   }, [debouncedQuery, severity, page]);
 
   useEffect(() => {
+    function handleHashChange() {
+      setSelectedId(selectedCveFromHash());
+    }
+    window.addEventListener("hashchange", handleHashChange);
+    return () => window.removeEventListener("hashchange", handleHashChange);
+  }, []);
+
+  useEffect(() => {
     if (!selectedId) return;
     let active = true;
     setDetail(null);
@@ -78,14 +92,28 @@ export function CveView({ cves: initialCves, csrfToken }: { cves: CVEItem[]; csr
   const rangeStart = total === 0 ? 0 : (page - 1) * PAGE_LIMIT + 1;
   const rangeEnd = Math.min(page * PAGE_LIMIT, total);
 
+  function closeDetail() {
+    setSelectedId(null);
+    if (currentViewHash() === "cve") {
+      window.location.hash = "/cve";
+    }
+  }
+
+  function currentViewHash() {
+    return window.location.hash.replace(/^#\/?/, "").split("?")[0];
+  }
+
   return (
     <section className="view-grid">
       <div className="view-toolbar cve-toolbar">
         <label className="search-control">
+          <span className="sr-only">Cari CVE, vendor, atau produk</span>
           <Search size={16} />
-          <input onChange={(event) => setQuery(event.target.value)} placeholder="Cari CVE, vendor, atau product" type="search" value={query} />
+          <input autoComplete="off" name="cve_query" onChange={(event) => setQuery(event.target.value)} placeholder="Cari CVE, vendor, atau produk…" type="search" value={query} />
         </label>
         <select
+          aria-label="Filter severity CVE"
+          name="severity"
           onChange={(event) => {
             setSeverity(event.target.value);
             setPage(1);
@@ -93,7 +121,7 @@ export function CveView({ cves: initialCves, csrfToken }: { cves: CVEItem[]; csr
           value={severity}
         >
           {["All", "Critical", "High", "Medium", "Low", "Unknown"].map((item) => (
-            <option key={item} value={item}>{item === "All" ? "Semua severity" : item}</option>
+            <option key={item} value={item}>{item === "All" ? "Semua tingkat risiko" : item}</option>
           ))}
         </select>
         <span className="result-count">{rangeStart}-{rangeEnd} dari {total} CVE</span>
@@ -108,10 +136,10 @@ export function CveView({ cves: initialCves, csrfToken }: { cves: CVEItem[]; csr
         </div>
       </div>
       {listError && <div className="form-error" role="alert">{listError}</div>}
-      <Panel title="CVE List" icon={<Shield size={18} />} wide>
+      <Panel title="Daftar CVE" icon={<Shield size={18} />} wide>
         {listLoading && items.length === 0
-          ? <div className="table-state">Memuat CVE...</div>
-          : <CveTable cves={items} onSelect={setSelectedId} selectedId={selectedId || undefined} />}
+          ? <div className="table-state" role="status">Memuat CVE…</div>
+          : <CveTable cves={items} selectedId={selectedId || undefined} />}
       </Panel>
       {selectedId && (
         <CveDetailDrawer
@@ -120,7 +148,7 @@ export function CveView({ cves: initialCves, csrfToken }: { cves: CVEItem[]; csr
           detail={detail}
           error={detailError}
           loading={detailLoading}
-          onClose={() => setSelectedId(null)}
+          onClose={closeDetail}
         />
       )}
     </section>

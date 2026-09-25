@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.core.database import get_db
+from app.core.time import utc_now
 from app.models.entities import AuthSession, User
 
 password_hash = PasswordHash.recommended()
@@ -34,8 +35,15 @@ def session_token_hash(token: str) -> str:
     return hashlib.sha256(token.encode("utf-8")).hexdigest()
 
 
-def create_session(db: Session, user: User) -> tuple[AuthSession, str]:
-    now = datetime.utcnow()
+def client_ip(request: Request | None) -> str:
+    if request is None:
+        return ""
+    forwarded = request.headers.get("x-forwarded-for", "")
+    return forwarded.split(",", 1)[0].strip() or (request.client.host if request.client else "")
+
+
+def create_session(db: Session, user: User, request: Request | None = None) -> tuple[AuthSession, str]:
+    now = utc_now()
     db.execute(delete(AuthSession).where(AuthSession.expires_at <= now))
     raw_token = secrets.token_urlsafe(48)
     session = AuthSession(
@@ -43,6 +51,9 @@ def create_session(db: Session, user: User) -> tuple[AuthSession, str]:
         token_hash=session_token_hash(raw_token),
         csrf_token=secrets.token_urlsafe(32),
         expires_at=now + timedelta(hours=settings.auth_session_hours),
+        last_seen_at=now,
+        ip_address=client_ip(request),
+        user_agent=(request.headers.get("user-agent", "")[:255] if request else ""),
     )
     db.add(session)
     db.commit()
@@ -60,7 +71,7 @@ def get_auth_context(request: Request, db: Session = Depends(get_db)) -> AuthCon
     )
     if session is None:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid session")
-    if session.expires_at <= datetime.utcnow():
+    if session.expires_at <= utc_now():
         db.delete(session)
         db.commit()
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Session expired")
@@ -70,6 +81,8 @@ def get_auth_context(request: Request, db: Session = Depends(get_db)) -> AuthCon
         db.delete(session)
         db.commit()
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Account unavailable")
+    session.last_seen_at = utc_now()
+    db.commit()
     return AuthContext(user=user, session=session)
 
 

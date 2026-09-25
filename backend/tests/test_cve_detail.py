@@ -9,6 +9,7 @@ from sqlalchemy.pool import StaticPool
 
 from app.api.cve_routes import cve_detail
 from app.core.database import Base
+from app.core.time import utc_now
 from app.models.entities import Asset, AssetExposure, CVE, CVEDetail, CVEWebEnrichment, IOC, ThreatNews
 from app.services.cve_pdf import build_cve_pdf
 
@@ -32,7 +33,7 @@ class CVEDetailTests(unittest.TestCase):
                 ThreatNews.__table__,
             ],
         )
-        now = datetime.utcnow()
+        now = utc_now()
         with Session(engine) as db:
             db.add(
                 CVE(

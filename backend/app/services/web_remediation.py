@@ -7,6 +7,7 @@ import httpx
 from sqlalchemy.orm import Session
 from sqlalchemy import select
 
+from app.core.time import utc_now
 from app.models.entities import CVE, CVEWebEnrichment
 from app.services.product_resolution import extract_cve_org_products, is_unknown_product
 
@@ -151,7 +152,7 @@ def fetch_and_store_web_remediation(db: Session, cve_id: str) -> CVEWebEnrichmen
         enrichment = CVEWebEnrichment(cve_id=cve_id)
         db.add(enrichment)
     enrichment.payload = json.dumps(payload)
-    enrichment.fetched_at = datetime.utcnow()
+    enrichment.fetched_at = utc_now()
     cve = db.scalar(select(CVE).where(CVE.cve_id == cve_id))
     products = payload.get("affected_products") or []
     if cve is not None and products:

@@ -1,6 +1,7 @@
 import { CalendarDays, ExternalLink, Globe2 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import type { NewsItem } from "../../lib/api";
+import { formatApiDate, formatApiDateTime } from "../../lib/datetime";
 import { EmptyState } from "../ui/EmptyState";
 import { Panel } from "../ui/Panel";
 
@@ -42,7 +43,7 @@ export function ThreatFeedView({ news }: { news: NewsItem[] }) {
               type="button"
             >
               <strong>{item.title}</strong>
-              <span>{item.source} - {new Date(item.published_at).toLocaleDateString("id-ID")}</span>
+              <span>{item.source} - {formatApiDate(item.published_at)}</span>
             </button>
           ))}
         </div>
@@ -59,7 +60,7 @@ export function ThreatFeedView({ news }: { news: NewsItem[] }) {
             <h2>{selected.title}</h2>
             <div className="overview-date">
               <CalendarDays size={15} />
-              {new Date(selected.published_at).toLocaleString("id-ID", { dateStyle: "long", timeStyle: "short" })}
+              {formatApiDateTime(selected.published_at, { dateStyle: "long", timeStyle: "short" })}
             </div>
             <p>{selected.summary || "Summary belum tersedia untuk artikel ini."}</p>
             <a href={selected.url} rel="noreferrer" target="_blank">

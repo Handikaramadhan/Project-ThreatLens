@@ -11,6 +11,7 @@ from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
+from app.core.time import utc_now
 from app.models.entities import Asset, AssetExposure, CVE, CVEDetail, CVEWebEnrichment, IOC, ThreatNews
 from app.schemas.cves import (
     AffectedProduct,
@@ -27,7 +28,7 @@ from app.schemas.cves import (
 )
 from app.services.auth import AuthContext, get_auth_context
 from app.services.cve_detail import fetch_and_store_nvd_cve, fetch_and_store_nvd_detail
-from app.services.cve_analysis import build_mitre_mapping, build_root_cause
+from app.services.cve_analysis import build_exploitability_analysis, build_mitre_mapping, build_root_cause
 from app.services.cve_pdf import build_cve_pdf
 from app.services.web_remediation import fetch_and_store_web_remediation
 from app.services.product_resolution import is_unknown_product
@@ -128,7 +129,7 @@ def cve_detail(
     cache_fresh = bool(
         detail
         and detail.nvd_fetched_at
-        and detail.nvd_fetched_at >= datetime.utcnow() - CACHE_TTL
+        and detail.nvd_fetched_at >= utc_now() - CACHE_TTL
     )
     if not cache_fresh:
         try:
@@ -144,7 +145,7 @@ def cve_detail(
     web_cache_fresh = bool(
         web_enrichment
         and web_enrichment.fetched_at
-        and web_enrichment.fetched_at >= datetime.utcnow() - CACHE_TTL
+        and web_enrichment.fetched_at >= utc_now() - CACHE_TTL
         and (
             "affected_products" in cached_web
             or not is_unknown_product(cve.product)
@@ -231,6 +232,7 @@ def cve_detail(
         .limit(10)
     ).all()
     known_exploited = bool(cve.kev or kev or nvd.get("cisa_exploit_add"))
+    has_public_references = bool(remediation_sources or nvd.get("references"))
 
     cvss_model = CVSSMetrics(**cvss) if cvss else None
     description = nvd.get("description") or cve.description or "Description is not available."
@@ -303,6 +305,14 @@ def cve_detail(
         ),
         root_cause=build_root_cause(description, weaknesses),
         mitre_techniques=build_mitre_mapping(description, weaknesses, cvss_model),
+        exploitability_analysis=build_exploitability_analysis(
+            description=description,
+            weaknesses=weaknesses,
+            cvss=cvss_model,
+            known_exploited=known_exploited,
+            has_public_references=has_public_references,
+            related_news_count=len(news),
+        ),
     )
 
 

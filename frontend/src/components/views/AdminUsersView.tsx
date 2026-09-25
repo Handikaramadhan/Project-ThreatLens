@@ -1,9 +1,11 @@
-import { AlertTriangle, ShieldCheck, Trash2, UserPlus, Users, X } from "lucide-react";
-import { useEffect, useState } from "react";
-import { createUser, deleteUser, fetchUsers, type User, type UserRole } from "../../lib/auth";
+import { AlertTriangle, MonitorX, RefreshCw, ShieldCheck, Trash2, UserPlus, Users, X } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
+import { createUser, deleteUser, fetchSessions, fetchUsers, revokeSession, type User, type UserRole, type UserSession } from "../../lib/auth";
+import { formatApiDate, formatApiDateTime } from "../../lib/datetime";
 import { analyzePassword, PASSWORD_MIN_LENGTH } from "../../lib/password";
 import { PasswordStrength } from "../auth/PasswordStrength";
 import { Panel } from "../ui/Panel";
+import { useDialogFocus } from "../../hooks/useDialogFocus";
 
 type Props = {
   csrfToken: string;
@@ -20,6 +22,14 @@ export function AdminUsersView({ csrfToken, currentUserId }: Props) {
   const [busy, setBusy] = useState(false);
   const [pendingDelete, setPendingDelete] = useState<User | null>(null);
   const [deletingId, setDeletingId] = useState<number | null>(null);
+  const [sessions, setSessions] = useState<UserSession[]>([]);
+  const [sessionsLoading, setSessionsLoading] = useState(false);
+  const [revokingSessionId, setRevokingSessionId] = useState<number | null>(null);
+  const deleteDialogRef = useRef<HTMLDivElement>(null);
+  useDialogFocus(deleteDialogRef, {
+    closeDisabled: deletingId !== null || pendingDelete === null,
+    onClose: () => setPendingDelete(null),
+  });
 
   async function loadUsers() {
     try {
@@ -29,18 +39,21 @@ export function AdminUsersView({ csrfToken, currentUserId }: Props) {
     }
   }
 
-  useEffect(() => {
-    void loadUsers();
-  }, []);
+  async function loadSessions() {
+    setSessionsLoading(true);
+    try {
+      setSessions(await fetchSessions());
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Gagal memuat session.");
+    } finally {
+      setSessionsLoading(false);
+    }
+  }
 
   useEffect(() => {
-    if (!pendingDelete) return;
-    const closeOnEscape = (event: KeyboardEvent) => {
-      if (event.key === "Escape" && deletingId === null) setPendingDelete(null);
-    };
-    window.addEventListener("keydown", closeOnEscape);
-    return () => window.removeEventListener("keydown", closeOnEscape);
-  }, [pendingDelete, deletingId]);
+    void loadUsers();
+    void loadSessions();
+  }, []);
 
   async function submit(event: React.FormEvent) {
     event.preventDefault();
@@ -62,6 +75,21 @@ export function AdminUsersView({ csrfToken, currentUserId }: Props) {
       setError(reason instanceof Error ? reason.message : "Gagal membuat user.");
     } finally {
       setBusy(false);
+    }
+  }
+
+  async function revoke(session: UserSession) {
+    setError("");
+    setSuccess("");
+    setRevokingSessionId(session.id);
+    try {
+      await revokeSession(session.id, csrfToken);
+      setSessions((current) => current.filter((item) => item.id !== session.id));
+      setSuccess(`Session ${session.username} berhasil dicabut.`);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Gagal mencabut session.");
+    } finally {
+      setRevokingSessionId(null);
     }
   }
 
@@ -89,18 +117,18 @@ export function AdminUsersView({ csrfToken, currentUserId }: Props) {
       <section className="users-layout">
         <Panel className="create-user-panel" title="Create User" icon={<UserPlus size={18} />}>
           <form className="admin-user-form" onSubmit={submit}>
-            <label>Username<input autoComplete="off" minLength={3} onChange={(event) => setUsername(event.target.value)} required value={username} /></label>
-            <label>Password<input autoComplete="new-password" minLength={PASSWORD_MIN_LENGTH} onChange={(event) => setPassword(event.target.value)} required type="password" value={password} /></label>
+            <label>Username<input autoComplete="off" minLength={3} name="username" onChange={(event) => setUsername(event.target.value)} required spellCheck={false} value={username} /></label>
+            <label>Password<input autoComplete="new-password" minLength={PASSWORD_MIN_LENGTH} name="password" onChange={(event) => setPassword(event.target.value)} required type="password" value={password} /></label>
             <PasswordStrength password={password} />
             <label>Permission
-              <select onChange={(event) => setRole(event.target.value as UserRole)} value={role}>
+              <select name="role" onChange={(event) => setRole(event.target.value as UserRole)} value={role}>
                 <option value="user">User</option>
                 <option value="admin">Admin</option>
               </select>
             </label>
             {error && <div className="form-error" role="alert">{error}</div>}
             {success && <div className="form-success" role="status">{success}</div>}
-            <button disabled={busy || !analyzePassword(password).valid} type="submit"><UserPlus size={18} />{busy ? "Membuat..." : "Buat user"}</button>
+            <button disabled={busy || !analyzePassword(password).valid} type="submit"><UserPlus size={18} />{busy ? "Membuat…" : "Buat user"}</button>
           </form>
         </Panel>
 
@@ -123,7 +151,7 @@ export function AdminUsersView({ csrfToken, currentUserId }: Props) {
                       <td>{user.username}{isSelf && <span className="self-label">You</span>}</td>
                       <td><span className={`role-badge role-${user.role}`}><ShieldCheck size={13} />{user.role}</span></td>
                       <td>{user.active ? "Active" : "Disabled"}</td>
-                      <td>{new Date(user.created_at).toLocaleDateString("id-ID")}</td>
+                      <td>{formatApiDate(user.created_at)}</td>
                       <td className="user-actions">
                         <button
                           aria-label={deleteTitle}
@@ -143,6 +171,44 @@ export function AdminUsersView({ csrfToken, currentUserId }: Props) {
             </table>
           </div>
         </Panel>
+
+        <Panel
+          className="user-sessions-panel"
+          title="Active sessions"
+          icon={<MonitorX size={18} />}
+          action={<button className="button-secondary refresh-button" disabled={sessionsLoading} onClick={() => void loadSessions()} type="button"><RefreshCw className={sessionsLoading ? "loading-spinner" : ""} size={15} />Muat ulang</button>}
+        >
+          <div className="table-scroll user-sessions-scroll">
+            <table>
+              <thead><tr><th>User</th><th>IP</th><th>Device</th><th>Last seen</th><th>Expires</th><th aria-label="Actions" /></tr></thead>
+              <tbody>
+                {sessions.map((session) => (
+                  <tr key={session.id}>
+                    <td>{session.username}{session.current && <span className="self-label">Current</span>}</td>
+                    <td>{session.ip_address || "-"}</td>
+                    <td className="source-message-cell">{session.user_agent || "-"}</td>
+                    <td>{formatApiDateTime(session.last_seen_at, { dateStyle: "medium", timeStyle: "short" })}</td>
+                    <td>{formatApiDateTime(session.expires_at, { dateStyle: "medium", timeStyle: "short" })}</td>
+                    <td className="user-actions">
+                      <button
+                        aria-label={`Revoke session ${session.username}`}
+                        className="delete-user-button"
+                        disabled={session.current || revokingSessionId === session.id}
+                        onClick={() => void revoke(session)}
+                        title={session.current ? "Session saat ini tidak bisa dicabut dari sini" : "Revoke session"}
+                        type="button"
+                      >
+                        <MonitorX size={16} />
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+                {sessionsLoading && sessions.length === 0 && <tr><td className="table-state" colSpan={6}>Memuat session…</td></tr>}
+                {!sessionsLoading && sessions.length === 0 && <tr><td className="table-state" colSpan={6}>Tidak ada session aktif.</td></tr>}
+              </tbody>
+            </table>
+          </div>
+        </Panel>
       </section>
 
       {pendingDelete && (
@@ -152,6 +218,7 @@ export function AdminUsersView({ csrfToken, currentUserId }: Props) {
             aria-modal="true"
             className="confirm-modal"
             onMouseDown={(event) => event.stopPropagation()}
+            ref={deleteDialogRef}
             role="dialog"
           >
             <button aria-label="Tutup" className="modal-close" disabled={deletingId !== null} onClick={() => setPendingDelete(null)} type="button">
@@ -163,7 +230,7 @@ export function AdminUsersView({ csrfToken, currentUserId }: Props) {
             <div className="modal-actions">
               <button className="button-secondary" disabled={deletingId !== null} onClick={() => setPendingDelete(null)} type="button">Batal</button>
               <button className="button-danger" disabled={deletingId !== null} onClick={() => void confirmDelete()} type="button">
-                <Trash2 size={16} />{deletingId !== null ? "Menghapus..." : "Hapus"}
+                <Trash2 size={16} />{deletingId !== null ? "Menghapus…" : "Hapus"}
               </button>
             </div>
           </div>

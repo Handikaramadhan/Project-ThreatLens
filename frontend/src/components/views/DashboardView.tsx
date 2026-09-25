@@ -4,11 +4,14 @@ import {
   Database,
   Globe2,
   PieChart,
+  RadioTower,
   Server,
   ShieldAlert,
   Workflow,
 } from "lucide-react";
 import type { DashboardPayload, DistributionPoint, Metric } from "../../lib/api";
+import { formatApiDateTime } from "../../lib/datetime";
+import { collectionStatusLabel, formatDuration, sourceStatusBuckets } from "../../lib/sourceHealth";
 import { CveTable } from "../ui/CveTable";
 import { NewsList } from "../ui/NewsList";
 import { Panel } from "../ui/Panel";
@@ -20,6 +23,18 @@ function metricClass(metric: Metric) {
 const metricIcons = [ShieldAlert, Crosshair, Database, Server];
 const severityOrder = ["Critical", "High", "Medium", "Low", "Unknown"];
 const iocColors = ["#ef3340", "#45b8c8", "#d9a441", "#4fbf79", "#686c76"];
+const metricLabels: Record<string, string> = {
+  "Critical CVE (7 hari)": "CVE kritis (7 hari)",
+  "Known exploited": "Eksploitasi diketahui",
+  "New indicators": "Indikator baru",
+  "High-risk assets": "Aset berisiko tinggi",
+};
+const metricDescriptions: Record<string, string> = {
+  "published in the last 7 days": "diterbitkan dalam 7 hari",
+  "tracked in the CISA KEV catalog": "tercatat di katalog CISA KEV",
+  "observed in the last 7 days": "terpantau dalam 7 hari",
+  "requires exposure review": "perlu tinjauan paparan",
+};
 
 function sortedDistribution(items: DistributionPoint[]) {
   return [...items].sort(
@@ -54,6 +69,8 @@ export function DashboardView({ data }: { data: DashboardPayload }) {
   const severityTotal = data.severity_distribution.reduce((sum, item) => sum + item.value, 0);
   const iocTotal = data.ioc_distribution.reduce((sum, item) => sum + item.value, 0);
   const assetTotal = data.asset_risk_distribution.reduce((sum, item) => sum + item.value, 0);
+  const sourceBuckets = sourceStatusBuckets(data.collection?.sources ?? []);
+  const sourceTotal = sourceBuckets.ok + sourceBuckets.warning + sourceBuckets.degraded;
 
   return (
     <>
@@ -62,16 +79,16 @@ export function DashboardView({ data }: { data: DashboardPayload }) {
           const Icon = metricIcons[index] || BarChart3;
           return (
             <article className={metricClass(metric)} key={metric.label}>
-              <div><Icon size={17} /><span>{metric.label}</span></div>
+              <div><Icon size={17} /><span>{metricLabels[metric.label] ?? metric.label}</span></div>
               <strong>{metric.value}</strong>
-              <small>{metric.delta}</small>
+              <small>{metricDescriptions[metric.delta] ?? metric.delta}</small>
             </article>
           );
         })}
       </section>
 
       <section className="dashboard-grid dashboard-intelligence-grid">
-        <Panel className="trend-panel" title="CVE publication trend · 14 days" icon={<BarChart3 size={18} />}>
+        <Panel className="trend-panel" title="Tren publikasi CVE · 14 hari" icon={<BarChart3 size={18} />}>
           <div className="trend-chart">
             <div className="chart-legend">
               <span className="critical">Critical</span>
@@ -105,7 +122,7 @@ export function DashboardView({ data }: { data: DashboardPayload }) {
           </div>
         </Panel>
 
-        <Panel className="risk-panel" title="Risk posture" icon={<ShieldAlert size={18} />}>
+        <Panel className="risk-panel" title="Profil risiko" icon={<ShieldAlert size={18} />}>
           <div className="risk-distribution">
             {sortedDistribution(data.severity_distribution).map((item) => (
               <div key={item.label}>
@@ -116,7 +133,7 @@ export function DashboardView({ data }: { data: DashboardPayload }) {
             ))}
           </div>
           <div className="asset-posture">
-            <div><span>Asset risk</span><strong>{assetTotal} monitored</strong></div>
+            <div><span>Risiko aset</span><strong>{assetTotal} terpantau</strong></div>
             <div className="asset-risk-strip">
               {data.asset_risk_distribution.map((item) => (
                 <i
@@ -135,11 +152,11 @@ export function DashboardView({ data }: { data: DashboardPayload }) {
           </div>
         </Panel>
 
-        <Panel className="priority-panel" title="Priority vulnerabilities" icon={<ShieldAlert size={18} />}>
+        <Panel className="priority-panel" title="Kerentanan prioritas" icon={<ShieldAlert size={18} />}>
           <CveTable cves={criticalQueue} />
         </Panel>
 
-        <Panel className="ioc-composition-panel" title="Indicator composition" icon={<PieChart size={18} />}>
+        <Panel className="ioc-composition-panel" title="Komposisi indikator" icon={<PieChart size={18} />}>
           <div className="ioc-composition">
             <div className="ioc-donut" style={{ background: conicGradient(data.ioc_distribution) }}>
               <div><strong>{iocTotal}</strong><span>IOC</span></div>
@@ -156,7 +173,7 @@ export function DashboardView({ data }: { data: DashboardPayload }) {
           </div>
         </Panel>
 
-        <Panel className="technique-panel" title="Observed ATT&CK techniques" icon={<Workflow size={18} />}>
+        <Panel className="technique-panel" title="Teknik ATT&CK teramati" icon={<Workflow size={18} />}>
           <div className="bar-list">
             {data.techniques.slice(0, 5).map((item) => (
               <div className="bar-row" key={item.technique_id}>
@@ -168,8 +185,46 @@ export function DashboardView({ data }: { data: DashboardPayload }) {
           </div>
         </Panel>
 
-        <Panel className="news-panel" title="Latest intelligence" icon={<Globe2 size={18} />}>
+        <Panel className="news-panel" title="Intelijen terbaru" icon={<Globe2 size={18} />}>
           <NewsList items={data.news.slice(0, 5)} />
+        </Panel>
+
+        <Panel className="source-health-panel" title="Kesehatan sumber" icon={<RadioTower size={18} />}>
+          {data.collection ? (
+            <div className="source-health-summary-panel">
+              <div className="collection-summary">
+                <div>
+                  <span>Pengumpulan terakhir</span>
+                  <strong>{collectionStatusLabel(data.collection.status)}</strong>
+                  <small>
+                    {data.collection.finished_at
+                      ? formatApiDateTime(data.collection.finished_at, { dateStyle: "medium", timeStyle: "short" })
+                      : "Masih berjalan"}
+                  </small>
+                </div>
+                <div>
+                  <span>Durasi</span>
+                  <strong>{formatDuration(data.collection.duration_seconds)}</strong>
+                  <small>{data.collection.degraded_sources} sumber bermasalah</small>
+                </div>
+              </div>
+              <div className="source-health-chart" aria-label={`${sourceBuckets.ok} sumber sehat, ${sourceBuckets.warning} peringatan, ${sourceBuckets.degraded} bermasalah`}>
+                <div className="source-health-bar">
+                  <i className="ok" style={{ width: `${sourceTotal ? (sourceBuckets.ok / sourceTotal) * 100 : 0}%` }} />
+                  <i className="warning" style={{ width: `${sourceTotal ? (sourceBuckets.warning / sourceTotal) * 100 : 0}%` }} />
+                  <i className="degraded" style={{ width: `${sourceTotal ? (sourceBuckets.degraded / sourceTotal) * 100 : 0}%` }} />
+                </div>
+                <div className="source-health-legend">
+                  <span><i className="ok" />OK <strong>{sourceBuckets.ok}</strong></span>
+                  <span><i className="warning" />Peringatan <strong>{sourceBuckets.warning}</strong></span>
+                  <span><i className="degraded" />Bermasalah <strong>{sourceBuckets.degraded}</strong></span>
+                </div>
+                <a className="source-health-open" href="#/sources">Lihat kesehatan sumber</a>
+              </div>
+            </div>
+          ) : (
+            <div className="empty-inline">Belum ada pengumpulan data.</div>
+          )}
         </Panel>
       </section>
     </>

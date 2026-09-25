@@ -25,10 +25,10 @@ export function LoginPage({ onLogin }: { onLogin: (session: AuthSession) => void
   return (
     <AuthLayout eyebrow="Secure access" title="Masuk ke ThreatLens">
       <form className="auth-form" onSubmit={submit}>
-        <label>Username<input autoComplete="username" onChange={(event) => setUsername(event.target.value)} required value={username} /></label>
-        <label>Password<input autoComplete="current-password" onChange={(event) => setPassword(event.target.value)} required type="password" value={password} /></label>
+        <label>Username<input autoComplete="username" name="username" onChange={(event) => setUsername(event.target.value)} required spellCheck={false} value={username} /></label>
+        <label>Password<input autoComplete="current-password" name="password" onChange={(event) => setPassword(event.target.value)} required type="password" value={password} /></label>
         {error && <div className="form-error" role="alert">{error}</div>}
-        <button disabled={busy} type="submit"><LogIn size={18} />{busy ? "Memeriksa..." : "Login"}</button>
+        <button disabled={busy} type="submit"><LogIn size={18} />{busy ? "Memeriksa…" : "Login"}</button>
       </form>
     </AuthLayout>
   );

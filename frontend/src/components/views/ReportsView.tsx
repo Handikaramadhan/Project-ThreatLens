@@ -22,13 +22,13 @@ export function ReportsView({ data }: { data: DashboardPayload }) {
     <section className="report-grid">
       <article className="report-option">
         <FileJson size={24} />
-        <div><strong>Threat Intelligence JSON</strong><span>Dashboard, CVE, IOC, feed, dan asset exposure.</span></div>
-        <button onClick={() => download("json")} title="Unduh JSON" type="button"><Download size={18} /></button>
+        <div><strong>Data intelijen JSON</strong><span>Ringkasan, CVE, IOC, feed, dan paparan aset.</span></div>
+        <button aria-label="Unduh laporan JSON" onClick={() => download("json")} title="Unduh JSON" type="button"><Download size={18} /></button>
       </article>
       <article className="report-option">
         <FileSpreadsheet size={24} />
-        <div><strong>CVE Report CSV</strong><span>Daftar CVE terbaru untuk analisis lanjutan.</span></div>
-        <button onClick={() => download("csv")} title="Unduh CSV" type="button"><Download size={18} /></button>
+        <div><strong>Laporan CVE CSV</strong><span>Daftar CVE terbaru untuk analisis lanjutan.</span></div>
+        <button aria-label="Unduh laporan CSV" onClick={() => download("csv")} title="Unduh CSV" type="button"><Download size={18} /></button>
       </article>
     </section>
   );

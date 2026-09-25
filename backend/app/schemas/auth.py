@@ -54,3 +54,17 @@ class AuthResponse(BaseModel):
 
 class AuthStatus(BaseModel):
     initialized: bool
+
+
+class SessionOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    user_id: int
+    username: str = ""
+    current: bool = False
+    ip_address: str
+    user_agent: str
+    created_at: datetime
+    last_seen_at: datetime
+    expires_at: datetime

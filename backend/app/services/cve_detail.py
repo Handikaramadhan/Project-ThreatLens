@@ -8,6 +8,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
+from app.core.time import utc_now
 from app.models.entities import CVE, CVEDetail
 from app.services.product_resolution import is_unknown_product
 
@@ -37,7 +38,7 @@ def _fetch_nvd_record(cve_id: str) -> dict[str, Any]:
 
 def _nvd_datetime(value: str | None) -> datetime:
     if not value:
-        return datetime.utcnow()
+        return utc_now()
     parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
     if parsed.tzinfo:
         parsed = parsed.astimezone(UTC).replace(tzinfo=None)
@@ -165,14 +166,14 @@ def get_or_create_detail(db: Session, cve_id: str) -> CVEDetail:
 def store_nvd_payload(db: Session, cve_id: str, payload: dict[str, Any]) -> CVEDetail:
     detail = get_or_create_detail(db, cve_id)
     detail.nvd_payload = json.dumps(payload)
-    detail.nvd_fetched_at = datetime.utcnow()
+    detail.nvd_fetched_at = utc_now()
     return detail
 
 
 def store_kev_payload(db: Session, cve_id: str, payload: dict[str, Any]) -> CVEDetail:
     detail = get_or_create_detail(db, cve_id)
     detail.kev_payload = json.dumps(payload)
-    detail.kev_fetched_at = datetime.utcnow()
+    detail.kev_fetched_at = utc_now()
     return detail
 
 

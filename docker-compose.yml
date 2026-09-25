@@ -1,6 +1,7 @@
 services:
   postgres:
     image: postgres:16-alpine
+    restart: unless-stopped
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-threatlens}
       POSTGRES_USER: ${POSTGRES_USER:-threatlens}
@@ -16,6 +17,7 @@ services:
 
   redis:
     image: redis:7-alpine
+    restart: unless-stopped
     command: ["redis-server", "--appendonly", "yes"]
     volumes:
       - redis-data:/data
@@ -28,6 +30,7 @@ services:
   api:
     build:
       context: ./backend
+    restart: unless-stopped
     environment:
       DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg://threatlens:threatlens@postgres:5432/threatlens}
       REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
@@ -35,9 +38,15 @@ services:
       NVD_API_KEY: ${NVD_API_KEY:-}
       URLHAUS_AUTH_KEY: ${URLHAUS_AUTH_KEY:-}
       COLLECTOR_WINDOW_DAYS: ${COLLECTOR_WINDOW_DAYS:-2}
+      NEWS_RETENTION_DAYS: ${NEWS_RETENTION_DAYS:-180}
+      IOC_RETENTION_DAYS: ${IOC_RETENTION_DAYS:-180}
+      COLLECTION_RUN_RETENTION_DAYS: ${COLLECTION_RUN_RETENTION_DAYS:-30}
+      COLLECTION_RUN_MIN_KEEP: ${COLLECTION_RUN_MIN_KEEP:-10}
+      SEED_DEMO_DATA: ${SEED_DEMO_DATA:-false}
       AUTH_COOKIE_NAME: ${AUTH_COOKIE_NAME:-threatlens_session}
       AUTH_COOKIE_SECURE: ${AUTH_COOKIE_SECURE:-false}
       AUTH_SESSION_HOURS: ${AUTH_SESSION_HOURS:-12}
+      ALERT_SECRET_KEY: ${ALERT_SECRET_KEY:-}
       AI_ENABLED: ${AI_ENABLED:-false}
       AI_PROVIDER: ${AI_PROVIDER:-}
       AI_MODEL: ${AI_MODEL:-}
@@ -52,10 +61,16 @@ services:
         condition: service_healthy
     expose:
       - "8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health', timeout=3)"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
 
   picoclaw-runner:
     build:
       context: ./picoclaw-runner
+    restart: unless-stopped
     environment:
       PICOCLAW_RUNNER_TOKEN: ${PICOCLAW_RUNNER_TOKEN:-}
       PICOCLAW_RUN_TIMEOUT: ${PICOCLAW_RUN_TIMEOUT:-180}
@@ -72,13 +87,33 @@ services:
   worker:
     build:
       context: ./backend
-    command: ["celery", "-A", "worker.celery_app.celery_app", "worker", "--beat", "--loglevel=INFO"]
+    restart: unless-stopped
+    command: ["celery", "-A", "worker.celery_app.celery_app", "worker", "--loglevel=INFO"]
     environment:
       DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg://threatlens:threatlens@postgres:5432/threatlens}
       REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
       NVD_API_KEY: ${NVD_API_KEY:-}
       URLHAUS_AUTH_KEY: ${URLHAUS_AUTH_KEY:-}
       COLLECTOR_WINDOW_DAYS: ${COLLECTOR_WINDOW_DAYS:-2}
+      NEWS_RETENTION_DAYS: ${NEWS_RETENTION_DAYS:-180}
+      IOC_RETENTION_DAYS: ${IOC_RETENTION_DAYS:-180}
+      COLLECTION_RUN_RETENTION_DAYS: ${COLLECTION_RUN_RETENTION_DAYS:-30}
+      COLLECTION_RUN_MIN_KEEP: ${COLLECTION_RUN_MIN_KEEP:-10}
+      ALERT_SECRET_KEY: ${ALERT_SECRET_KEY:-}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  beat:
+    build:
+      context: ./backend
+    restart: unless-stopped
+    command: ["celery", "-A", "worker.celery_app.celery_app", "beat", "--loglevel=INFO"]
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg://threatlens:threatlens@postgres:5432/threatlens}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
     depends_on:
       postgres:
         condition: service_healthy
@@ -91,10 +126,11 @@ services:
     volumes:
       - ./frontend:/app
       - frontend-dist:/app/dist
-    command: ["sh", "-c", "npm install && npm run build"]
+    command: ["sh", "-c", "npm ci && npm run build"]
 
   caddy:
     image: caddy:2-alpine
+    restart: unless-stopped
     ports:
       - "8080:8080"
     volumes:
@@ -104,7 +140,7 @@ services:
       - caddy-config:/config
     depends_on:
       api:
-        condition: service_started
+        condition: service_healthy
       frontend-build:
         condition: service_completed_successfully
 

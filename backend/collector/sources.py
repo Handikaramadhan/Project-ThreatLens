@@ -21,4 +21,8 @@ SOURCES = [
     ThreatSource("MalwareBazaar", "https://bazaar.abuse.ch", "malware"),
     ThreatSource("The Hacker News RSS", "https://feeds.feedburner.com/TheHackersNews", "news"),
     ThreatSource("BleepingComputer RSS", "https://www.bleepingcomputer.com/feed/", "news"),
+    ThreatSource("SecurityWeek RSS", "https://www.securityweek.com/feed/", "news"),
+    ThreatSource("Krebs on Security RSS", "https://krebsonsecurity.com/feed/", "news"),
+    ThreatSource("SANS Internet Storm Center RSS", "https://isc.sans.edu/rssfeed_full.xml", "news"),
+    ThreatSource("Google Security Blog RSS", "https://feeds.feedburner.com/GoogleOnlineSecurityBlog", "news"),
 ]

@@ -1,6 +1,7 @@
 import { AlertTriangle, Trash2, X } from "lucide-react";
-import { useEffect } from "react";
+import { useRef } from "react";
 import type { Asset } from "../../lib/assets";
+import { useDialogFocus } from "../../hooks/useDialogFocus";
 
 type Props = {
   asset: Asset;
@@ -11,13 +12,8 @@ type Props = {
 };
 
 export function DeleteAssetModal({ asset, busy, error, onClose, onConfirm }: Props) {
-  useEffect(() => {
-    function closeOnEscape(event: KeyboardEvent) {
-      if (event.key === "Escape" && !busy) onClose();
-    }
-    window.addEventListener("keydown", closeOnEscape);
-    return () => window.removeEventListener("keydown", closeOnEscape);
-  }, [busy, onClose]);
+  const dialogRef = useRef<HTMLDivElement>(null);
+  useDialogFocus(dialogRef, { closeDisabled: busy, onClose });
 
   return (
     <div className="modal-backdrop" onMouseDown={() => !busy && onClose()}>
@@ -26,6 +22,7 @@ export function DeleteAssetModal({ asset, busy, error, onClose, onConfirm }: Pro
         aria-modal="true"
         className="confirm-modal"
         onMouseDown={(event) => event.stopPropagation()}
+        ref={dialogRef}
         role="dialog"
       >
         <button aria-label="Tutup" className="modal-close" disabled={busy} onClick={onClose} type="button">
@@ -38,7 +35,7 @@ export function DeleteAssetModal({ asset, busy, error, onClose, onConfirm }: Pro
         <div className="modal-actions">
           <button className="button-secondary" disabled={busy} onClick={onClose} type="button">Batal</button>
           <button className="button-danger" disabled={busy} onClick={onConfirm} type="button">
-            <Trash2 size={16} />{busy ? "Menghapus..." : "Hapus"}
+            <Trash2 size={16} />{busy ? "Menghapus…" : "Hapus"}
           </button>
         </div>
       </div>

@@ -9,6 +9,7 @@ from sqlalchemy.pool import StaticPool
 
 from app.api.cve_routes import list_cves
 from app.core.database import Base
+from app.core.time import utc_now
 from app.models.entities import CVE
 
 
@@ -20,7 +21,7 @@ class CVEListTests(unittest.TestCase):
             poolclass=StaticPool,
         )
         Base.metadata.create_all(engine, tables=[CVE.__table__])
-        now = datetime.utcnow()
+        now = utc_now()
         with Session(engine) as db:
             db.add_all(
                 [
@@ -51,6 +52,7 @@ class CVEListTests(unittest.TestCase):
             self.assertEqual(len(second.items), 120)
             self.assertEqual(filtered.total, 1)
             self.assertEqual(filtered.items[0].vendor, "Acme")
+        engine.dispose()
 
     def test_fetches_exact_cve_from_nvd_when_missing_locally(self) -> None:
         engine = create_engine(
@@ -107,6 +109,7 @@ class CVEListTests(unittest.TestCase):
             self.assertEqual(cached.total, 1)
             fetch.assert_called_once_with(db, "CVE-2026-46817")
             self.assertEqual(response.headers["X-ThreatLens-NVD-Lookup"], "fetched")
+        engine.dispose()
 
 
 if __name__ == "__main__":

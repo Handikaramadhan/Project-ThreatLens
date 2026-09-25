@@ -8,6 +8,7 @@ import httpx
 from sqlalchemy import or_, select
 
 from app.core.database import SessionLocal
+from app.core.time import utc_now
 from app.models.entities import CVE
 from app.services.product_resolution import (
     extract_cve_org_products,
@@ -60,7 +61,7 @@ def main() -> None:
         updated = 0
         inferred = 0
         failed = 0
-        started = datetime.utcnow()
+        started = utc_now()
 
         with httpx.Client(
             timeout=httpx.Timeout(15, connect=5),
@@ -102,7 +103,7 @@ def main() -> None:
                             flush=True,
                         )
         db.commit()
-        elapsed = (datetime.utcnow() - started).total_seconds()
+        elapsed = (utc_now() - started).total_seconds()
         print(
             f"product-backfill done cna={updated} inferred={inferred} "
             f"unresolved={failed} elapsed={elapsed:.1f}s",

@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class Metric(BaseModel):
@@ -63,6 +63,27 @@ class CVETrendPoint(BaseModel):
     unknown: int
 
 
+class SourceStatusItem(BaseModel):
+    id: str
+    name: str
+    category: str
+    status: str
+    count: int | None = None
+    message: str = ""
+    consecutive_failures: int = 0
+    last_success_at: datetime | None = None
+    last_seen_at: datetime | None = None
+
+
+class CollectionSummary(BaseModel):
+    status: str
+    started_at: datetime | None = None
+    finished_at: datetime | None = None
+    duration_seconds: float | None = None
+    degraded_sources: int = 0
+    sources: list[SourceStatusItem] = Field(default_factory=list)
+
+
 class DashboardPayload(BaseModel):
     metrics: list[Metric]
     cves: list[CVEItem]
@@ -74,3 +95,4 @@ class DashboardPayload(BaseModel):
     severity_distribution: list[DistributionPoint]
     ioc_distribution: list[DistributionPoint]
     asset_risk_distribution: list[DistributionPoint]
+    collection: CollectionSummary | None = None

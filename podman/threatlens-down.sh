@@ -5,6 +5,7 @@ podman rm -f \
   threatlens-caddy \
   threatlens-api \
   threatlens-worker \
+  threatlens-beat \
   threatlens-picoclaw-runner \
   threatlens-redis \
   threatlens-postgres >/dev/null 2>&1 || true

@@ -12,11 +12,14 @@ from urllib.parse import urlparse
 import feedparser
 import httpx
 from dateutil import parser as date_parser
-from sqlalchemy import delete, select, update
+from sqlalchemy import delete, select, text, update
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
+from app.core.time import utc_now
 from app.models.entities import CVE, CVEDetail, IOC, CollectionRun, ThreatNews
+from app.services.alerts import alert_event_key, flush_alert_events, queue_alert_event
+from app.services.asset_matching import refresh_asset_exposures
 from app.services.cve_detail import build_nvd_payload
 from app.services.product_resolution import infer_product_from_description, is_unknown_product
 
@@ -25,8 +28,16 @@ CISA_KEV_URL = "https://www.cisa.gov/sites/default/files/feeds/known_exploited_v
 RSS_FEEDS = {
     "The Hacker News": "https://feeds.feedburner.com/TheHackersNews",
     "BleepingComputer": "https://www.bleepingcomputer.com/feed/",
+    "SecurityWeek": "https://www.securityweek.com/feed/",
+    "Krebs on Security": "https://krebsonsecurity.com/feed/",
+    "SANS Internet Storm Center": "https://isc.sans.edu/rssfeed_full.xml",
+    "Google Security Blog": "https://feeds.feedburner.com/GoogleOnlineSecurityBlog",
 }
 PHISHDESTROY_URL = "https://api.destroy.tools/v1/feed/primary_active"
+PHISHDESTROY_FALLBACK_URL = (
+    "https://raw.githubusercontent.com/phishdestroy/destroylist/"
+    "main/rootlist/formats/primary_active/domains.txt"
+)
 FEODO_RECOMMENDED_IPS_URL = (
     "https://feodotracker.abuse.ch/downloads/ipblocklist_recommended.txt"
 )
@@ -35,6 +46,7 @@ MALWAREBAZAAR_RECENT_CSV_URL = "https://bazaar.abuse.ch/export/csv/recent/"
 ALIENVAULT_REPUTATION_URL = "https://reputation.alienvault.com/reputation.generic"
 USER_AGENT = "ThreatLens/1.0 (home-lab threat intelligence collector)"
 RETRYABLE_STATUS = {429, 500, 502, 503, 504}
+COLLECTION_LOCK_ID = 847_264_193
 
 
 def _get_with_retry(client: httpx.Client, url: str, **kwargs: Any) -> httpx.Response:
@@ -58,7 +70,7 @@ def _get_with_retry(client: httpx.Client, url: str, **kwargs: Any) -> httpx.Resp
 
 def _utc_naive(value: str | None, fallback: datetime | None = None) -> datetime:
     if not value:
-        return fallback or datetime.utcnow()
+        return fallback or utc_now()
     parsed = date_parser.parse(value)
     if parsed.tzinfo:
         parsed = parsed.astimezone(UTC).replace(tzinfo=None)
@@ -140,7 +152,7 @@ def collect_cisa_kev(db: Session, client: httpx.Client) -> tuple[set[str], int]:
     kev_ids = {item["cveID"] for item in vulnerabilities if item.get("cveID")}
     detail_rows = db.scalars(select(CVEDetail).where(CVEDetail.cve_id.in_(kev_ids))).all() if kev_ids else []
     details_by_id = {item.cve_id: item for item in detail_rows}
-    fetched_at = datetime.utcnow()
+    fetched_at = utc_now()
     for vulnerability in vulnerabilities:
         cve_id = vulnerability.get("cveID")
         if not cve_id:
@@ -183,6 +195,15 @@ def collect_cisa_kev(db: Session, client: httpx.Client) -> tuple[set[str], int]:
                 "source": "CISA KEV",
             },
         )
+        queue_alert_event(
+            db,
+            event_type="cve",
+            event_key=alert_event_key("cve", cve_id),
+            title=f"{cve_id} masuk CISA KEV",
+            body=f"{item.get('vulnerabilityName', cve_id)}. Vendor: {item.get('vendorProject', 'Unknown')}.",
+            severity="High",
+            link=f"/#/cve?cve={cve_id}",
+        )
     db.commit()
     return kev_ids, len(vulnerabilities)
 
@@ -213,11 +234,12 @@ def collect_nvd(db: Session, client: httpx.Client, kev_ids: set[str]) -> int:
             select(CVEDetail).where(CVEDetail.cve_id.in_(cve_ids))
         ).all() if cve_ids else []
         details_by_id = {item.cve_id: item for item in existing_details}
-        fetched_at = datetime.utcnow()
+        fetched_at = utc_now()
         for cve in cve_rows:
             cve_id = cve.get("id")
             if not cve_id:
                 continue
+            is_new_cve = cve_id not in existing_by_id
             description = _english_description(cve)
             score, severity = _cvss(cve)
             vendor, product = _vendor_product(cve)
@@ -245,6 +267,16 @@ def collect_nvd(db: Session, client: httpx.Client, kev_ids: set[str]) -> int:
                     "source": "NVD",
                 },
             )
+            if is_new_cve:
+                queue_alert_event(
+                    db,
+                    event_type="cve",
+                    event_key=alert_event_key("cve", cve_id),
+                    title=f"CVE baru: {cve_id}",
+                    body=f"{title[:180]}\nVendor/Product: {vendor} {product}. CVSS: {score}.",
+                    severity=severity if severity in {"Low", "Medium", "High", "Critical"} else "Medium",
+                    link=f"/#/cve?cve={cve_id}",
+                )
             detail = details_by_id.get(cve_id)
             if detail is None:
                 detail = CVEDetail(cve_id=cve_id)
@@ -263,33 +295,51 @@ def collect_nvd(db: Session, client: httpx.Client, kev_ids: set[str]) -> int:
     return count
 
 
-def collect_news(db: Session, client: httpx.Client) -> int:
+def collect_news(db: Session, client: httpx.Client) -> tuple[int, dict[str, int], dict[str, str]]:
     count = 0
+    source_counts: dict[str, int] = {}
+    source_errors: dict[str, str] = {}
     for source, url in RSS_FEEDS.items():
-        response = _get_with_retry(client, url)
-        feed = feedparser.parse(response.content)
-        for entry in feed.entries[:30]:
-            link = entry.get("link")
-            title = _plain_text(entry.get("title", ""))
-            if not link or not title:
-                continue
-            item = db.scalar(select(ThreatNews).where(ThreatNews.url == link))
-            payload = {
-                "title": title[:255],
-                "source": source,
-                "published_at": _utc_naive(entry.get("published") or entry.get("updated")),
-                "summary": _plain_text(entry.get("summary", "")),
-            }
-            if item is None:
-                db.add(ThreatNews(url=link, **payload))
-            else:
-                for key, value in payload.items():
-                    setattr(item, key, value)
-            count += 1
-        db.commit()
+        try:
+            response = _get_with_retry(client, url)
+            feed = feedparser.parse(response.content)
+            source_count = 0
+            for entry in feed.entries[:30]:
+                link = entry.get("link")
+                title = _plain_text(entry.get("title", ""))
+                if not link or not title:
+                    continue
+                item = db.scalar(select(ThreatNews).where(ThreatNews.url == link))
+                payload = {
+                    "title": title[:255],
+                    "source": source,
+                    "published_at": _utc_naive(entry.get("published") or entry.get("updated")),
+                    "summary": _plain_text(entry.get("summary", "")),
+                }
+                if item is None:
+                    db.add(ThreatNews(url=link, **payload))
+                    queue_alert_event(
+                        db,
+                        event_type="news",
+                        event_key=alert_event_key("news", link),
+                        title=title,
+                        body=f"{source}\n{link}",
+                        severity="Medium",
+                        link=link,
+                    )
+                else:
+                    for key, value in payload.items():
+                        setattr(item, key, value)
+                count += 1
+                source_count += 1
+            source_counts[source] = source_count
+            db.commit()
+        except Exception as exc:
+            db.rollback()
+            source_errors[source] = str(exc)
     db.execute(delete(ThreatNews).where(ThreatNews.url.like("https://example.local/%")))
     db.commit()
-    return count
+    return count, source_counts, source_errors
 
 
 def _parse_feodo_ips(payload: str) -> list[str]:
@@ -364,6 +414,70 @@ def _parse_malwarebazaar_hashes(payload: str) -> list[dict[str, Any]]:
     return records
 
 
+def _normalize_domain(value: object) -> str | None:
+    candidate = str(value or "").strip().lower().rstrip(".")
+    if not candidate or len(candidate) > 253:
+        return None
+    try:
+        candidate = candidate.encode("idna").decode("ascii")
+    except UnicodeError:
+        return None
+    labels = candidate.split(".")
+    if len(labels) < 2:
+        return None
+    if any(
+        not label
+        or len(label) > 63
+        or label.startswith("-")
+        or label.endswith("-")
+        or not re.fullmatch(r"[a-z0-9-]+", label)
+        for label in labels
+    ):
+        return None
+    return candidate
+
+
+def _parse_phishdestroy_json(payload: Any) -> list[str]:
+    if not isinstance(payload, dict):
+        return []
+    values = payload.get("domains")
+    if not isinstance(values, list):
+        return []
+    domains = [_normalize_domain(value) for value in values]
+    return list(dict.fromkeys(domain for domain in domains if domain))
+
+
+def _parse_phishdestroy_text(payload: str) -> list[str]:
+    domains = []
+    for line in payload.splitlines():
+        value = line.strip()
+        if not value or value.startswith("#"):
+            continue
+        domain = _normalize_domain(value)
+        if domain:
+            domains.append(domain)
+    return list(dict.fromkeys(domains))
+
+
+def _fetch_phishdestroy_domains(
+    client: httpx.Client,
+) -> tuple[list[str], str]:
+    try:
+        response = client.get(PHISHDESTROY_URL)
+        response.raise_for_status()
+        domains = _parse_phishdestroy_json(response.json())
+        if domains:
+            return domains, "api"
+    except (httpx.HTTPError, ValueError):
+        pass
+
+    response = _get_with_retry(client, PHISHDESTROY_FALLBACK_URL)
+    domains = _parse_phishdestroy_text(response.text)
+    if not domains:
+        raise ValueError("PhishDestroy API and fallback feed returned no valid domains")
+    return domains, "github_fallback"
+
+
 def _upsert_iocs(
     db: Session,
     indicator_type: str,
@@ -378,7 +492,7 @@ def _upsert_iocs(
         select(IOC).where(IOC.type == indicator_type, IOC.indicator.in_(indicators))
     ).all()
     existing_by_indicator = {item.indicator: item for item in existing}
-    now = datetime.utcnow()
+    now = utc_now()
     for record in records:
         indicator = str(record["indicator"])
         item = existing_by_indicator.get(indicator)
@@ -394,6 +508,16 @@ def _upsert_iocs(
             )
             db.add(item)
             existing_by_indicator[indicator] = item
+            if severity in {"High", "Critical"}:
+                queue_alert_event(
+                    db,
+                    event_type="ioc",
+                    event_key=alert_event_key("ioc", f"{indicator_type}:{indicator}"),
+                    title=f"IOC baru: {indicator_type.upper()}",
+                    body=f"{indicator}\nThreat: {item.threat or 'unknown'}\nSource: {source}",
+                    severity=severity,
+                    link="/#/ioc",
+                )
         else:
             item.threat = str(record.get("threat") or item.threat)
             item.severity = severity
@@ -453,11 +577,12 @@ def collect_urlhaus(db: Session, client: httpx.Client) -> int:
         if not indicator:
             continue
         item = db.scalar(select(IOC).where(IOC.indicator == indicator, IOC.type == "url"))
-        now = datetime.utcnow()
+        now = utc_now()
         if item is None:
+            indicator = indicator[:255]
             db.add(
                 IOC(
-                    indicator=indicator[:255],
+                    indicator=indicator,
                     type="url",
                     threat=(row.get("threat") or row.get("Threat") or "malware")[:120],
                     severity="High",
@@ -465,6 +590,15 @@ def collect_urlhaus(db: Session, client: httpx.Client) -> int:
                     first_seen=now,
                     last_seen=now,
                 )
+            )
+            queue_alert_event(
+                db,
+                event_type="ioc",
+                event_key=alert_event_key("ioc", f"url:{indicator}"),
+                title="IOC baru: URL",
+                body=f"{indicator}\nThreat: {row.get('threat') or row.get('Threat') or 'malware'}\nSource: URLhaus",
+                severity="High",
+                link="/#/ioc",
             )
         else:
             item.last_seen = now
@@ -475,11 +609,11 @@ def collect_urlhaus(db: Session, client: httpx.Client) -> int:
     return count
 
 
-def collect_phishdestroy(db: Session, client: httpx.Client) -> int:
-    response = _get_with_retry(client, PHISHDESTROY_URL)
-    domains = response.json().get("domains", [])
-    if not domains:
-        return 0
+def collect_phishdestroy(
+    db: Session,
+    client: httpx.Client,
+) -> tuple[int, str]:
+    domains, source = _fetch_phishdestroy_domains(client)
 
     sample_size = min(1000, len(domains))
     step = max(1, len(domains) // sample_size)
@@ -488,7 +622,7 @@ def collect_phishdestroy(db: Session, client: httpx.Client) -> int:
         select(IOC).where(IOC.type == "domain", IOC.indicator.in_(sampled))
     ).all()
     existing_by_indicator = {item.indicator: item for item in existing}
-    now = datetime.utcnow()
+    now = utc_now()
     for domain in sampled:
         item = existing_by_indicator.get(domain)
         if item is None:
@@ -503,17 +637,137 @@ def collect_phishdestroy(db: Session, client: httpx.Client) -> int:
                     last_seen=now,
                 )
             )
+            queue_alert_event(
+                db,
+                event_type="ioc",
+                event_key=alert_event_key("ioc", f"domain:{domain}"),
+                title="IOC baru: DOMAIN",
+                body=f"{domain}\nThreat: phishing\nSource: PhishDestroy",
+                severity="High",
+                link="/#/ioc",
+            )
         else:
             item.last_seen = now
             item.severity = "High"
             item.source = "PhishDestroy"
-    db.execute(delete(IOC).where(IOC.indicator.contains("xx")))
     db.commit()
-    return len(sampled)
+    return len(sampled), source
 
 
-def run_collection(db: Session) -> dict[str, Any]:
-    now = datetime.utcnow()
+def _acquire_collection_lock(db: Session) -> bool:
+    if db.get_bind().dialect.name != "postgresql":
+        return True
+    return bool(
+        db.scalar(
+            text("SELECT pg_try_advisory_lock(:lock_id)"),
+            {"lock_id": COLLECTION_LOCK_ID},
+        )
+    )
+
+
+def _release_collection_lock(db: Session) -> None:
+    if db.get_bind().dialect.name != "postgresql":
+        return
+    db.rollback()
+    db.execute(
+        text("SELECT pg_advisory_unlock(:lock_id)"),
+        {"lock_id": COLLECTION_LOCK_ID},
+    )
+    db.commit()
+
+
+def _source_status(
+    source_id: str,
+    name: str,
+    category: str,
+    status: str,
+    *,
+    count: int | None = None,
+    message: str = "",
+) -> dict[str, Any]:
+    return {
+        "id": source_id,
+        "name": name,
+        "category": category,
+        "status": status,
+        "count": count,
+        "message": message,
+    }
+
+
+def _retention_cutoff(days: int) -> datetime | None:
+    if days <= 0:
+        return None
+    return utc_now() - timedelta(days=days)
+
+
+def _delete_result_count(result: Any) -> int:
+    return int(getattr(result, "rowcount", 0) or 0)
+
+
+def _prune_old_data(db: Session, current_run_id: int | None = None) -> dict[str, int]:
+    pruned = {
+        "pruned_news": 0,
+        "pruned_iocs": 0,
+        "pruned_collection_runs": 0,
+    }
+
+    news_cutoff = _retention_cutoff(settings.news_retention_days)
+    if news_cutoff is not None:
+        pruned["pruned_news"] = _delete_result_count(
+            db.execute(delete(ThreatNews).where(ThreatNews.published_at < news_cutoff))
+        )
+
+    ioc_cutoff = _retention_cutoff(settings.ioc_retention_days)
+    if ioc_cutoff is not None:
+        pruned["pruned_iocs"] = _delete_result_count(
+            db.execute(delete(IOC).where(IOC.last_seen < ioc_cutoff))
+        )
+
+    run_cutoff = _retention_cutoff(settings.collection_run_retention_days)
+    min_keep = max(1, settings.collection_run_min_keep)
+    if run_cutoff is not None:
+        keep_ids = [
+            int(run_id)
+            for run_id in db.scalars(
+                select(CollectionRun.id).order_by(CollectionRun.started_at.desc()).limit(min_keep)
+            ).all()
+        ]
+        if current_run_id is not None:
+            keep_ids.append(current_run_id)
+        delete_query = delete(CollectionRun).where(CollectionRun.started_at < run_cutoff)
+        if keep_ids:
+            delete_query = delete_query.where(CollectionRun.id.not_in(set(keep_ids)))
+        pruned["pruned_collection_runs"] = _delete_result_count(db.execute(delete_query))
+
+    db.commit()
+    return pruned
+
+
+def _previous_source_statuses(db: Session, current_run_id: int) -> dict[str, str]:
+    previous = db.scalar(
+        select(CollectionRun)
+        .where(CollectionRun.id < current_run_id)
+        .order_by(CollectionRun.started_at.desc())
+        .limit(1)
+    )
+    if previous is None or not previous.details:
+        return {}
+    try:
+        payload = json.loads(previous.details)
+    except (TypeError, ValueError):
+        return {}
+    statuses: dict[str, str] = {}
+    for source in payload.get("sources", []):
+        source_id = source.get("id")
+        status = source.get("status")
+        if source_id and status:
+            statuses[str(source_id)] = str(status)
+    return statuses
+
+
+def _run_collection_locked(db: Session) -> dict[str, Any]:
+    now = utc_now()
     db.execute(
         update(CollectionRun)
         .where(CollectionRun.status == "running")
@@ -526,6 +780,7 @@ def run_collection(db: Session) -> dict[str, Any]:
 
     results: dict[str, Any] = {}
     errors: dict[str, str] = {}
+    sources: list[dict[str, Any]] = []
     with httpx.Client(
         timeout=httpx.Timeout(45),
         follow_redirects=True,
@@ -533,56 +788,210 @@ def run_collection(db: Session) -> dict[str, Any]:
     ) as client:
         try:
             kev_ids, results["cisa_kev_catalog"] = collect_cisa_kev(db, client)
+            sources.append(
+                _source_status(
+                    "cisa_kev",
+                    "CISA KEV",
+                    "vulnerability",
+                    "ok",
+                    count=results["cisa_kev_catalog"],
+                )
+            )
         except Exception as exc:
             db.rollback()
             kev_ids = set()
             errors["cisa_kev"] = str(exc)
+            sources.append(_source_status("cisa_kev", "CISA KEV", "vulnerability", "error", message=str(exc)))
         try:
             results["nvd_cves"] = collect_nvd(db, client, kev_ids)
+            sources.append(
+                _source_status("nvd", "NVD", "vulnerability", "ok", count=results["nvd_cves"])
+            )
         except Exception as exc:
             db.rollback()
             errors["nvd"] = str(exc)
+            sources.append(_source_status("nvd", "NVD", "vulnerability", "error", message=str(exc)))
         try:
-            results["news"] = collect_news(db, client)
+            news_count, news_source_counts, news_source_errors = collect_news(db, client)
+            results["news"] = news_count
+            results["news_sources"] = news_source_counts
+            for name, count in news_source_counts.items():
+                sources.append(
+                    _source_status(
+                        name.lower().replace(" ", "_"),
+                        name,
+                        "news",
+                        "ok",
+                        count=count,
+                    )
+                )
+            for name, error in news_source_errors.items():
+                errors[f"news:{name}"] = error
+                sources.append(
+                    _source_status(
+                        name.lower().replace(" ", "_"),
+                        name,
+                        "news",
+                        "error",
+                        message=error,
+                    )
+                )
         except Exception as exc:
             db.rollback()
             errors["news"] = str(exc)
+            for name in RSS_FEEDS:
+                sources.append(
+                    _source_status(
+                        name.lower().replace(" ", "_"),
+                        name,
+                        "news",
+                        "error",
+                        message=str(exc),
+                    )
+                )
         try:
             results["urlhaus_iocs"] = collect_urlhaus(db, client)
             if not settings.urlhaus_auth_key:
                 results["urlhaus"] = "skipped: URLHAUS_AUTH_KEY not configured"
+                sources.append(
+                    _source_status(
+                        "urlhaus",
+                        "URLhaus",
+                        "ioc",
+                        "skipped",
+                        count=0,
+                        message="URLHAUS_AUTH_KEY not configured",
+                    )
+                )
+            else:
+                sources.append(
+                    _source_status(
+                        "urlhaus",
+                        "URLhaus",
+                        "ioc",
+                        "ok",
+                        count=results["urlhaus_iocs"],
+                    )
+                )
         except Exception as exc:
             db.rollback()
             errors["urlhaus"] = str(exc)
+            sources.append(_source_status("urlhaus", "URLhaus", "ioc", "error", message=str(exc)))
         try:
-            results["phishdestroy_iocs"] = collect_phishdestroy(db, client)
+            phishdestroy_count, phishdestroy_source = collect_phishdestroy(db, client)
+            results["phishdestroy_iocs"] = phishdestroy_count
+            results["phishdestroy_source"] = phishdestroy_source
+            sources.append(
+                _source_status(
+                    "phishdestroy",
+                    "PhishDestroy",
+                    "ioc",
+                    "fallback" if phishdestroy_source != "api" else "ok",
+                    count=phishdestroy_count,
+                    message=f"using {phishdestroy_source}",
+                )
+            )
         except Exception as exc:
             db.rollback()
             errors["phishdestroy"] = str(exc)
+            sources.append(_source_status("phishdestroy", "PhishDestroy", "ioc", "error", message=str(exc)))
         try:
             results["feodo_ip_iocs"] = collect_feodo_ips(db, client)
+            sources.append(
+                _source_status("feodo", "Feodo Tracker", "ioc", "ok", count=results["feodo_ip_iocs"])
+            )
         except Exception as exc:
             db.rollback()
             errors["feodo"] = str(exc)
+            sources.append(_source_status("feodo", "Feodo Tracker", "ioc", "error", message=str(exc)))
         try:
             results["alienvault_ip_iocs"] = collect_alienvault_ips(db, client)
+            sources.append(
+                _source_status(
+                    "alienvault",
+                    "AlienVault Reputation",
+                    "ioc",
+                    "ok",
+                    count=results["alienvault_ip_iocs"],
+                )
+            )
         except Exception as exc:
             db.rollback()
             errors["alienvault"] = str(exc)
+            sources.append(_source_status("alienvault", "AlienVault Reputation", "ioc", "error", message=str(exc)))
         try:
             results["openphish_url_iocs"] = collect_openphish_urls(db, client)
+            sources.append(
+                _source_status("openphish", "OpenPhish", "ioc", "ok", count=results["openphish_url_iocs"])
+            )
         except Exception as exc:
             db.rollback()
             errors["openphish"] = str(exc)
+            sources.append(_source_status("openphish", "OpenPhish", "ioc", "error", message=str(exc)))
         try:
             results["malwarebazaar_hash_iocs"] = collect_malwarebazaar_hashes(db, client)
+            sources.append(
+                _source_status(
+                    "malwarebazaar",
+                    "MalwareBazaar",
+                    "ioc",
+                    "ok",
+                    count=results["malwarebazaar_hash_iocs"],
+                )
+            )
         except Exception as exc:
             db.rollback()
             errors["malwarebazaar"] = str(exc)
+            sources.append(_source_status("malwarebazaar", "MalwareBazaar", "ioc", "error", message=str(exc)))
 
     run = db.get(CollectionRun, run.id)
-    run.finished_at = datetime.utcnow()
+    run.finished_at = utc_now()
+    try:
+        results.update(_prune_old_data(db, run.id))
+    except Exception as exc:
+        db.rollback()
+        errors["retention"] = str(exc)
+        sources.append(_source_status("retention", "Retention pruning", "maintenance", "error", message=str(exc)))
+    try:
+        results["asset_exposures"] = refresh_asset_exposures(db)
+    except Exception as exc:
+        db.rollback()
+        errors["asset_exposures"] = str(exc)
+        sources.append(_source_status("asset_exposures", "Asset exposure matching", "maintenance", "error", message=str(exc)))
     run.status = "partial" if errors else "success"
-    run.details = json.dumps({"results": results, "errors": errors})
+    run.details = json.dumps({"results": results, "errors": errors, "sources": sources})
     db.commit()
-    return {"status": run.status, "results": results, "errors": errors}
+    previous_statuses = _previous_source_statuses(db, run.id)
+    for source in sources:
+        if source.get("status") != "error":
+            continue
+        source_id = str(source.get("id", "unknown"))
+        source_state = "persistent_error" if previous_statuses.get(source_id) == "error" else "new_error"
+        queue_alert_event(
+            db,
+            event_type="source_health",
+            event_key=f"source_health:{run.id}:{source_id}",
+            title=f"Source bermasalah: {source.get('name', 'Unknown')}",
+            body=str(source.get("message") or "Source collection failed")[:1000],
+            severity="High",
+            link="/#/sources",
+            state=source_state,
+        )
+    alert_deliveries = flush_alert_events(db)
+    if alert_deliveries:
+        results["alert_deliveries"] = alert_deliveries
+    return {"status": run.status, "results": results, "errors": errors, "sources": sources}
+
+
+def run_collection(db: Session) -> dict[str, Any]:
+    if not _acquire_collection_lock(db):
+        return {
+            "status": "already_running",
+            "results": {},
+            "errors": {},
+            "sources": [],
+        }
+    try:
+        return _run_collection_locked(db)
+    finally:
+        _release_collection_lock(db)

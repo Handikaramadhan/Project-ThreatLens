@@ -13,6 +13,25 @@ export type AuthSession = {
   csrf_token: string;
 };
 
+export type UserSession = {
+  id: number;
+  user_id: number;
+  username: string;
+  current: boolean;
+  ip_address: string;
+  user_agent: string;
+  created_at: string;
+  last_seen_at: string;
+  expires_at: string;
+};
+
+export class AuthHttpError extends Error {
+  constructor(public status: number, message: string) {
+    super(message);
+    this.name = "AuthHttpError";
+  }
+}
+
 async function request<T>(url: string, options: RequestInit = {}): Promise<T> {
   const response = await fetch(url, {
     credentials: "same-origin",
@@ -24,7 +43,7 @@ async function request<T>(url: string, options: RequestInit = {}): Promise<T> {
   });
   if (!response.ok) {
     const body = await response.json().catch(() => ({ detail: "Request failed" }));
-    throw new Error(typeof body.detail === "string" ? body.detail : "Request failed");
+    throw new AuthHttpError(response.status, typeof body.detail === "string" ? body.detail : "Request failed");
   }
   if (response.status === 204) {
     return undefined as T;
@@ -75,6 +94,17 @@ export function createUser(username: string, password: string, role: UserRole, c
 
 export function deleteUser(userId: number, csrfToken: string) {
   return request<void>(`/api/admin/users/${userId}`, {
+    method: "DELETE",
+    headers: { "X-CSRF-Token": csrfToken }
+  });
+}
+
+export function fetchSessions() {
+  return request<UserSession[]>("/api/admin/sessions");
+}
+
+export function revokeSession(sessionId: number, csrfToken: string) {
+  return request<void>(`/api/admin/sessions/${sessionId}`, {
     method: "DELETE",
     headers: { "X-CSRF-Token": csrfToken }
   });

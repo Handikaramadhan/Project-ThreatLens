@@ -99,6 +99,15 @@ export type CVEDetail = {
     confidence: string;
     url: string;
   }>;
+  exploitability_analysis: {
+    likelihood: string;
+    confidence: string;
+    prerequisites: string[];
+    likely_attack_path: string[];
+    exploitation_signals: string[];
+    defensive_notes: string[];
+    basis: string[];
+  };
 };
 
 export type CVEListItem = {
